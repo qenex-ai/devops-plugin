@@ -1,0 +1,37 @@
+{
+  "hooks": [
+    {
+      "event": "PreToolUse",
+      "matcher": {
+        "toolName": "Write|Edit",
+        "content": "\\.(tf|yaml|yml|json)$"
+      },
+      "config": {
+        "type": "prompt",
+        "prompt": "Before modifying infrastructure configuration files (Terraform, Kubernetes, or cloud configs), verify:\n1. The change aligns with security best practices\n2. No sensitive data (credentials, API keys) is being hardcoded\n3. Resource naming follows conventions\n4. Appropriate resource limits are set for containers\n\nIf any security concerns are detected, warn the user before proceeding."
+      }
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": {
+        "toolName": "Bash",
+        "content": "kubectl apply|helm (install|upgrade)|terraform apply"
+      },
+      "config": {
+        "type": "prompt",
+        "prompt": "Before executing deployment commands:\n1. Verify the target cluster/environment is correct (check kubectl context or terraform workspace)\n2. Confirm this is an intentional deployment\n3. For production deployments, ensure proper approvals\n\nWarn the user about the deployment target and ask for confirmation if deploying to production."
+      }
+    },
+    {
+      "event": "PostToolUse",
+      "matcher": {
+        "toolName": "Bash",
+        "content": "kubectl apply|helm (install|upgrade)|docker push"
+      },
+      "config": {
+        "type": "prompt",
+        "prompt": "After deployment commands:\n1. Suggest checking deployment status\n2. Recommend running health checks\n3. Provide rollback command for quick recovery if needed\n\nOffer to monitor the deployment or run verification commands."
+      }
+    }
+  ]
+}
