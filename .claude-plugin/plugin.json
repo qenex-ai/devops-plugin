@@ -1,0 +1,28 @@
+{
+  "name": "devops",
+  "version": "1.0.0",
+  "description": "Enterprise-grade DevOps and Platform Engineering toolkit with 41 skill domains covering infrastructure, deployment, security, monitoring, and multi-platform development",
+  "author": {
+    "name": "QENEX LTD",
+    "email": "dev@qenex.io",
+    "url": "https://qenex.io"
+  },
+  "homepage": "https://github.com/qenex/devops-plugin",
+  "repository": "https://github.com/qenex/devops-plugin",
+  "license": "MIT",
+  "keywords": [
+    "devops",
+    "platform-engineering",
+    "infrastructure",
+    "deployment",
+    "ci-cd",
+    "kubernetes",
+    "cloud",
+    "security",
+    "monitoring",
+    "multi-platform",
+    "web3",
+    "mobile",
+    "ux-ui"
+  ]
+}
