@@ -1,0 +1,425 @@
+#!/usr/bin/env bash
+#
+# Cache Management - Manage Redis, Memcached, and CDN caches
+# Usage: devops cache-manage <action> [target] [options]
+#
+
+set -euo pipefail
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+# Default settings
+REDIS_HOST="${REDIS_HOST:-localhost}"
+REDIS_PORT="${REDIS_PORT:-6379}"
+REDIS_PASSWORD="${REDIS_PASSWORD:-}"
+BATCH_SIZE=100
+DRY_RUN=false
+
+info() { echo -e "${BLUE}ℹ${NC} $*"; }
+success() { echo -e "${GREEN}✓${NC} $*"; }
+warn() { echo -e "${YELLOW}⚠${NC} $*"; }
+error() { echo -e "${RED}✗${NC} $*" >&2; }
+header() { echo -e "\n${BOLD}${CYAN}$*${NC}"; }
+
+usage() {
+    cat <<EOF
+Cache Management - Manage application caches
+
+Usage: devops cache-manage <action> [target] [options]
+
+Actions:
+  flush <pattern>     Delete keys matching pattern
+  warm <source>       Pre-populate cache from source
+  inspect <pattern>   View keys and values
+  stats               Show cache statistics
+  info                Show Redis server info
+
+Options:
+  --host=HOST         Redis host (default: localhost, or REDIS_HOST env)
+  --port=PORT         Redis port (default: 6379, or REDIS_PORT env)
+  --password=PASS     Redis password (or REDIS_PASSWORD env)
+  --batch=SIZE        Batch size for operations (default: 100)
+  --dry-run           Show what would be done
+  --force             Skip confirmation for destructive operations
+  -h, --help          Show this help
+
+Examples:
+  devops cache-manage stats
+  devops cache-manage inspect "user:*"
+  devops cache-manage flush "session:expired:*"
+  devops cache-manage flush "user:*" --dry-run
+  devops cache-manage warm --endpoints=/api/popular
+
+Environment Variables:
+  REDIS_HOST          Redis host
+  REDIS_PORT          Redis port
+  REDIS_PASSWORD      Redis password
+
+EOF
+}
+
+# Build redis-cli command with auth
+redis_cmd() {
+    local cmd="redis-cli -h $REDIS_HOST -p $REDIS_PORT"
+    [[ -n "$REDIS_PASSWORD" ]] && cmd="$cmd -a $REDIS_PASSWORD"
+    echo "$cmd"
+}
+
+# Check Redis connection
+check_redis() {
+    info "Connecting to Redis at $REDIS_HOST:$REDIS_PORT..."
+
+    if ! command -v redis-cli &>/dev/null; then
+        error "redis-cli not found. Install Redis CLI tools."
+        exit 1
+    fi
+
+    local result
+    result=$($(redis_cmd) PING 2>&1) || true
+
+    if [[ "$result" == "PONG" ]]; then
+        success "Redis connection OK"
+        return 0
+    else
+        error "Failed to connect to Redis: $result"
+        exit 1
+    fi
+}
+
+# Show cache statistics
+cmd_stats() {
+    check_redis
+    header "Cache Statistics"
+
+    local cmd
+    cmd=$(redis_cmd)
+
+    # Get memory info
+    local memory_used
+    memory_used=$($cmd INFO memory 2>/dev/null | grep "used_memory_human:" | cut -d: -f2 | tr -d '\r')
+    echo -e "Memory Used:        ${BOLD}$memory_used${NC}"
+
+    # Get keyspace info
+    local total_keys
+    total_keys=$($cmd DBSIZE 2>/dev/null | grep -oE '[0-9]+')
+    echo -e "Total Keys:         ${BOLD}$total_keys${NC}"
+
+    # Get hit/miss stats
+    local hits misses hit_ratio
+    hits=$($cmd INFO stats 2>/dev/null | grep "keyspace_hits:" | cut -d: -f2 | tr -d '\r')
+    misses=$($cmd INFO stats 2>/dev/null | grep "keyspace_misses:" | cut -d: -f2 | tr -d '\r')
+
+    if [[ -n "$hits" ]] && [[ -n "$misses" ]] && [[ $((hits + misses)) -gt 0 ]]; then
+        hit_ratio=$(echo "scale=2; $hits * 100 / ($hits + $misses)" | bc 2>/dev/null || echo "N/A")
+        echo -e "Hit Ratio:          ${BOLD}${hit_ratio}%${NC}"
+        echo -e "Hits:               $hits"
+        echo -e "Misses:             $misses"
+    fi
+
+    # Get connected clients
+    local clients
+    clients=$($cmd INFO clients 2>/dev/null | grep "connected_clients:" | cut -d: -f2 | tr -d '\r')
+    echo -e "Connected Clients:  $clients"
+
+    # Get evicted keys
+    local evicted
+    evicted=$($cmd INFO stats 2>/dev/null | grep "evicted_keys:" | cut -d: -f2 | tr -d '\r')
+    echo -e "Evicted Keys:       $evicted"
+
+    echo ""
+
+    # Key distribution by pattern
+    header "Key Distribution (sample)"
+    $cmd --scan --count 1000 2>/dev/null | \
+        sed 's/:.*/:*/' | \
+        sort | uniq -c | sort -rn | head -10 || true
+
+    echo ""
+}
+
+# Show Redis info
+cmd_info() {
+    check_redis
+    header "Redis Server Info"
+
+    local cmd
+    cmd=$(redis_cmd)
+
+    $cmd INFO server 2>/dev/null | grep -E "redis_version|os:|arch|uptime"
+    echo ""
+    $cmd INFO replication 2>/dev/null | grep -E "role:|connected_slaves:"
+    echo ""
+}
+
+# Inspect keys
+cmd_inspect() {
+    local pattern="${1:-*}"
+
+    check_redis
+    header "Inspecting Keys: $pattern"
+
+    local cmd
+    cmd=$(redis_cmd)
+
+    # Count matching keys
+    local count
+    count=$($cmd --scan --pattern "$pattern" 2>/dev/null | wc -l | tr -d ' ')
+    info "Found $count keys matching pattern"
+
+    if [[ $count -eq 0 ]]; then
+        warn "No keys found"
+        return 0
+    fi
+
+    echo ""
+    echo -e "${BOLD}Sample Keys (first 20):${NC}"
+    echo "─────────────────────────────────────────"
+
+    $cmd --scan --pattern "$pattern" 2>/dev/null | head -20 | while read -r key; do
+        local type ttl size
+        type=$($cmd TYPE "$key" 2>/dev/null | tr -d '\r')
+        ttl=$($cmd TTL "$key" 2>/dev/null | tr -d '\r')
+        size=$($cmd MEMORY USAGE "$key" 2>/dev/null | tr -d '\r' || echo "N/A")
+
+        printf "%-40s type=%-8s ttl=%-8s size=%s\n" "$key" "$type" "$ttl" "$size"
+    done
+
+    echo ""
+
+    # Memory usage for pattern
+    header "Memory Analysis"
+    local total_size=0
+    local sample_count=0
+
+    while read -r key && [[ $sample_count -lt 100 ]]; do
+        local size
+        size=$($cmd MEMORY USAGE "$key" 2>/dev/null | tr -d '\r' || echo "0")
+        [[ "$size" =~ ^[0-9]+$ ]] && total_size=$((total_size + size))
+        ((sample_count++))
+    done < <($cmd --scan --pattern "$pattern" 2>/dev/null | head -100)
+
+    if [[ $sample_count -gt 0 ]]; then
+        local avg=$((total_size / sample_count))
+        local estimated=$((avg * count))
+        echo "Sample Size:     $sample_count keys"
+        echo "Sample Memory:   $total_size bytes"
+        echo "Average/Key:     $avg bytes"
+        echo "Estimated Total: ~$((estimated / 1024 / 1024)) MB"
+    fi
+
+    echo ""
+}
+
+# Flush keys
+cmd_flush() {
+    local pattern="${1:-}"
+
+    if [[ -z "$pattern" ]]; then
+        error "Pattern required. Use 'devops cache-manage flush <pattern>'"
+        echo "Example: devops cache-manage flush 'session:*'"
+        exit 1
+    fi
+
+    check_redis
+
+    local cmd
+    cmd=$(redis_cmd)
+
+    # Count keys
+    local count
+    count=$($cmd --scan --pattern "$pattern" 2>/dev/null | wc -l | tr -d ' ')
+
+    if [[ $count -eq 0 ]]; then
+        warn "No keys found matching: $pattern"
+        return 0
+    fi
+
+    header "Flush Keys: $pattern"
+    warn "Found $count keys to delete"
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "Dry run - would delete $count keys"
+        echo ""
+        echo "Sample keys that would be deleted:"
+        $cmd --scan --pattern "$pattern" 2>/dev/null | head -10
+        return 0
+    fi
+
+    # Confirm if not forced
+    if [[ "${FORCE:-false}" != "true" ]]; then
+        echo ""
+        read -rp "Delete $count keys? [y/N] " confirm
+        if [[ "$confirm" != "y" ]] && [[ "$confirm" != "Y" ]]; then
+            info "Cancelled"
+            return 0
+        fi
+    fi
+
+    # Delete in batches
+    info "Deleting keys in batches of $BATCH_SIZE..."
+
+    local deleted=0
+    local start_time
+    start_time=$(date +%s)
+
+    $cmd --scan --pattern "$pattern" 2>/dev/null | while read -r key; do
+        $cmd DEL "$key" >/dev/null 2>&1
+        ((deleted++)) || true
+        if [[ $((deleted % BATCH_SIZE)) -eq 0 ]]; then
+            echo -ne "\r  Deleted: $deleted / $count"
+        fi
+    done
+
+    local end_time
+    end_time=$(date +%s)
+    local duration=$((end_time - start_time))
+
+    echo ""
+    success "Deleted $count keys in ${duration}s"
+    echo ""
+}
+
+# Warm cache
+cmd_warm() {
+    local source="${1:-}"
+
+    header "Cache Warming"
+
+    if [[ -z "$source" ]]; then
+        info "Usage: devops cache-manage warm --endpoints=/api/endpoint1,/api/endpoint2"
+        info "       devops cache-manage warm --sitemap=https://example.com/sitemap.xml"
+        return 1
+    fi
+
+    if [[ "$source" == --endpoints=* ]]; then
+        local endpoints="${source#--endpoints=}"
+        local base_url="${BASE_URL:-http://localhost:3000}"
+
+        IFS=',' read -ra urls <<< "$endpoints"
+        for endpoint in "${urls[@]}"; do
+            info "Warming: $base_url$endpoint"
+            if curl -sf "$base_url$endpoint" >/dev/null 2>&1; then
+                success "Warmed: $endpoint"
+            else
+                warn "Failed: $endpoint"
+            fi
+        done
+
+    elif [[ "$source" == --sitemap=* ]]; then
+        local sitemap_url="${source#--sitemap=}"
+        info "Fetching sitemap: $sitemap_url"
+
+        if command -v curl &>/dev/null; then
+            local urls
+            urls=$(curl -sf "$sitemap_url" 2>/dev/null | grep -oP '(?<=<loc>)[^<]+' | head -50)
+
+            local count=0
+            for url in $urls; do
+                curl -sf "$url" >/dev/null 2>&1 &
+                ((count++))
+                [[ $((count % 10)) -eq 0 ]] && wait && info "Warmed $count URLs..."
+            done
+            wait
+            success "Warmed $count URLs from sitemap"
+        else
+            error "curl not found"
+        fi
+    fi
+
+    echo ""
+}
+
+# Parse arguments
+FORCE=false
+ACTION=""
+TARGET=""
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            --host=*)
+                REDIS_HOST="${1#*=}"
+                ;;
+            --port=*)
+                REDIS_PORT="${1#*=}"
+                ;;
+            --password=*)
+                REDIS_PASSWORD="${1#*=}"
+                ;;
+            --batch=*)
+                BATCH_SIZE="${1#*=}"
+                ;;
+            --dry-run)
+                DRY_RUN=true
+                ;;
+            --force)
+                FORCE=true
+                ;;
+            flush|warm|inspect|stats|info)
+                ACTION="$1"
+                ;;
+            *)
+                if [[ -z "$ACTION" ]]; then
+                    error "Unknown action: $1"
+                    usage
+                    exit 1
+                else
+                    TARGET="$1"
+                fi
+                ;;
+        esac
+        shift
+    done
+}
+
+# Main
+main() {
+    parse_args "$@"
+
+    if [[ -z "$ACTION" ]]; then
+        usage
+        exit 0
+    fi
+
+    echo -e "${BOLD}${CYAN}"
+    echo "╔══════════════════════════════════════════════════════════╗"
+    echo "║              CACHE MANAGEMENT                            ║"
+    echo "╚══════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+
+    case "$ACTION" in
+        stats)
+            cmd_stats
+            ;;
+        info)
+            cmd_info
+            ;;
+        inspect)
+            cmd_inspect "$TARGET"
+            ;;
+        flush)
+            cmd_flush "$TARGET"
+            ;;
+        warm)
+            cmd_warm "$TARGET"
+            ;;
+        *)
+            error "Unknown action: $ACTION"
+            usage
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
