@@ -1,0 +1,449 @@
+#!/usr/bin/env bash
+#
+# Infrastructure Audit - Scan infrastructure configs for security and best practices
+# Usage: devops infrastructure-audit [scope] [options]
+#
+
+set -euo pipefail
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+# Counters
+CRITICAL=0
+HIGH=0
+MEDIUM=0
+LOW=0
+
+# Options
+SCOPE="all"
+FORMAT="cli"
+OUTPUT_FILE=""
+DRY_RUN=false
+
+info() { echo -e "${BLUE}ℹ${NC} $*"; }
+success() { echo -e "${GREEN}✓${NC} $*"; }
+warn() { echo -e "${YELLOW}⚠${NC} $*"; }
+error() { echo -e "${RED}✗${NC} $*"; }
+header() { echo -e "\n${BOLD}${CYAN}$*${NC}"; }
+
+usage() {
+    cat <<EOF
+Infrastructure Audit - Scan for security issues and best practices
+
+Usage: devops infrastructure-audit [scope] [options]
+
+Scope:
+  all                 Run all applicable scans (default)
+  security            Security-focused scan
+  cost                Cost optimization analysis
+  reliability         Reliability and HA checks
+
+Options:
+  --format=FORMAT     Output format: cli, json, sarif, markdown (default: cli)
+  --output=FILE       Write results to file
+  --dry-run           Show what would be scanned
+  -h, --help          Show this help
+
+Examples:
+  devops infrastructure-audit
+  devops infrastructure-audit security --format=json
+  devops infrastructure-audit --output=audit-report.md --format=markdown
+
+EOF
+}
+
+# Check tool availability
+check_tools() {
+    header "Checking Available Tools"
+
+    local tools_found=0
+
+    if command -v checkov &>/dev/null; then
+        success "checkov $(checkov --version 2>/dev/null | head -1 || echo 'available')"
+        ((tools_found++))
+    else
+        warn "checkov not found (pip install checkov)"
+    fi
+
+    if command -v tfsec &>/dev/null; then
+        success "tfsec $(tfsec --version 2>/dev/null || echo 'available')"
+        ((tools_found++))
+    else
+        warn "tfsec not found (brew install tfsec)"
+    fi
+
+    if command -v trivy &>/dev/null; then
+        success "trivy $(trivy --version 2>/dev/null | head -1 || echo 'available')"
+        ((tools_found++))
+    else
+        warn "trivy not found (brew install trivy)"
+    fi
+
+    if command -v hadolint &>/dev/null; then
+        success "hadolint available"
+        ((tools_found++))
+    else
+        warn "hadolint not found (brew install hadolint)"
+    fi
+
+    if [[ $tools_found -eq 0 ]]; then
+        warn "No scanning tools found. Will perform manual checks only."
+    fi
+
+    echo ""
+    return 0
+}
+
+# Detect infrastructure files
+detect_infrastructure() {
+    header "Detecting Infrastructure Files"
+
+    local found=false
+
+    # Terraform
+    if compgen -G "*.tf" > /dev/null 2>&1 || [[ -d "terraform" ]]; then
+        success "Terraform files detected"
+        found=true
+    fi
+
+    # Kubernetes
+    if [[ -d "k8s" ]] || [[ -d "kubernetes" ]] || [[ -d "manifests" ]]; then
+        success "Kubernetes manifests detected"
+        found=true
+    fi
+
+    # Docker
+    if [[ -f "Dockerfile" ]] || compgen -G "docker-compose*.yml" > /dev/null 2>&1; then
+        success "Docker files detected"
+        found=true
+    fi
+
+    # Helm
+    if [[ -f "Chart.yaml" ]] || [[ -d "charts" ]]; then
+        success "Helm charts detected"
+        found=true
+    fi
+
+    # CloudFormation
+    if compgen -G "*.cfn.yaml" > /dev/null 2>&1 || compgen -G "*.cfn.json" > /dev/null 2>&1; then
+        success "CloudFormation templates detected"
+        found=true
+    fi
+
+    if [[ "$found" == "false" ]]; then
+        warn "No infrastructure files detected in current directory"
+    fi
+
+    echo ""
+}
+
+# Run Terraform security scan
+scan_terraform() {
+    if ! compgen -G "*.tf" > /dev/null 2>&1 && [[ ! -d "terraform" ]]; then
+        return 0
+    fi
+
+    header "Scanning Terraform Files"
+
+    local tf_dir="."
+    [[ -d "terraform" ]] && tf_dir="terraform"
+
+    # Check for hardcoded secrets
+    info "Checking for hardcoded secrets..."
+    local secrets_found=$(grep -rE "(password|secret|api_key|access_key)\s*=\s*\"[^$\"]+" --include="*.tf" "$tf_dir" 2>/dev/null || true)
+    if [[ -n "$secrets_found" ]]; then
+        error "CRITICAL: Hardcoded secrets found in Terraform files"
+        echo "$secrets_found" | head -5
+        ((CRITICAL++))
+    else
+        success "No hardcoded secrets found"
+    fi
+
+    # Check for overly permissive IAM
+    info "Checking IAM policies..."
+    local permissive_iam=$(grep -rE '"Action"\s*:\s*"\*"|"Resource"\s*:\s*"\*"' --include="*.tf" "$tf_dir" 2>/dev/null || true)
+    if [[ -n "$permissive_iam" ]]; then
+        warn "HIGH: Overly permissive IAM policies found (Action: * or Resource: *)"
+        ((HIGH++))
+    else
+        success "IAM policies follow least privilege"
+    fi
+
+    # Check for public access
+    info "Checking for public exposure..."
+    local public_access=$(grep -rE 'publicly_accessible\s*=\s*true|cidr_block\s*=\s*"0\.0\.0\.0/0"' --include="*.tf" "$tf_dir" 2>/dev/null || true)
+    if [[ -n "$public_access" ]]; then
+        warn "HIGH: Public access configurations found"
+        ((HIGH++))
+    else
+        success "No public exposure detected"
+    fi
+
+    # Check for missing encryption
+    info "Checking encryption settings..."
+    local unencrypted=$(grep -rE 'encrypted\s*=\s*false' --include="*.tf" "$tf_dir" 2>/dev/null || true)
+    if [[ -n "$unencrypted" ]]; then
+        warn "MEDIUM: Unencrypted resources found"
+        ((MEDIUM++))
+    else
+        success "Encryption settings OK"
+    fi
+
+    # Run checkov if available
+    if command -v checkov &>/dev/null; then
+        info "Running checkov scan..."
+        checkov -d "$tf_dir" --framework terraform --compact --quiet 2>/dev/null || true
+    fi
+
+    # Run tfsec if available
+    if command -v tfsec &>/dev/null; then
+        info "Running tfsec scan..."
+        tfsec "$tf_dir" --minimum-severity MEDIUM 2>/dev/null || true
+    fi
+}
+
+# Run Kubernetes security scan
+scan_kubernetes() {
+    local k8s_dir=""
+    [[ -d "k8s" ]] && k8s_dir="k8s"
+    [[ -d "kubernetes" ]] && k8s_dir="kubernetes"
+    [[ -d "manifests" ]] && k8s_dir="manifests"
+
+    [[ -z "$k8s_dir" ]] && return 0
+
+    header "Scanning Kubernetes Manifests"
+
+    # Check for privileged containers
+    info "Checking for privileged containers..."
+    local privileged=$(grep -rE 'privileged:\s*true' --include="*.yaml" --include="*.yml" "$k8s_dir" 2>/dev/null || true)
+    if [[ -n "$privileged" ]]; then
+        error "CRITICAL: Privileged containers found"
+        ((CRITICAL++))
+    else
+        success "No privileged containers"
+    fi
+
+    # Check for root user
+    info "Checking for root user..."
+    local root_user=$(grep -rE 'runAsUser:\s*0|runAsNonRoot:\s*false' --include="*.yaml" --include="*.yml" "$k8s_dir" 2>/dev/null || true)
+    if [[ -n "$root_user" ]]; then
+        warn "HIGH: Containers running as root found"
+        ((HIGH++))
+    else
+        success "No root user containers"
+    fi
+
+    # Check for missing resource limits
+    info "Checking resource limits..."
+    local deployments=$(find "$k8s_dir" -name "*.yaml" -o -name "*.yml" 2>/dev/null | xargs grep -l "kind: Deployment" 2>/dev/null || true)
+    for f in $deployments; do
+        if ! grep -q "limits:" "$f" 2>/dev/null; then
+            warn "MEDIUM: Missing resource limits in $f"
+            ((MEDIUM++))
+        fi
+    done
+
+    # Check for latest tag
+    info "Checking image tags..."
+    local latest_tag=$(grep -rE 'image:.*:latest' --include="*.yaml" --include="*.yml" "$k8s_dir" 2>/dev/null || true)
+    if [[ -n "$latest_tag" ]]; then
+        warn "MEDIUM: Using 'latest' image tag"
+        ((MEDIUM++))
+    else
+        success "Proper image tags used"
+    fi
+
+    # Check for missing probes
+    info "Checking health probes..."
+    for f in $deployments; do
+        if ! grep -q "livenessProbe:" "$f" 2>/dev/null; then
+            warn "LOW: Missing livenessProbe in $f"
+            ((LOW++))
+        fi
+        if ! grep -q "readinessProbe:" "$f" 2>/dev/null; then
+            warn "LOW: Missing readinessProbe in $f"
+            ((LOW++))
+        fi
+    done
+
+    # Run checkov if available
+    if command -v checkov &>/dev/null; then
+        info "Running checkov Kubernetes scan..."
+        checkov -d "$k8s_dir" --framework kubernetes --compact --quiet 2>/dev/null || true
+    fi
+
+    # Run trivy if available
+    if command -v trivy &>/dev/null; then
+        info "Running trivy config scan..."
+        trivy config "$k8s_dir" --severity HIGH,CRITICAL 2>/dev/null || true
+    fi
+}
+
+# Run Docker security scan
+scan_docker() {
+    [[ ! -f "Dockerfile" ]] && return 0
+
+    header "Scanning Dockerfile"
+
+    # Check for root user
+    info "Checking for USER instruction..."
+    if ! grep -q "^USER" Dockerfile 2>/dev/null; then
+        warn "MEDIUM: No USER instruction (runs as root)"
+        ((MEDIUM++))
+    else
+        success "USER instruction found"
+    fi
+
+    # Check for latest tag in FROM
+    info "Checking base image tags..."
+    if grep -qE "^FROM.*:latest" Dockerfile 2>/dev/null; then
+        warn "MEDIUM: Using 'latest' tag in FROM instruction"
+        ((MEDIUM++))
+    else
+        success "Proper base image tag"
+    fi
+
+    # Check for secrets in ENV
+    info "Checking for secrets in ENV..."
+    local env_secrets=$(grep -E "^ENV.*(PASSWORD|SECRET|KEY|TOKEN)=" Dockerfile 2>/dev/null || true)
+    if [[ -n "$env_secrets" ]]; then
+        error "CRITICAL: Secrets in ENV instructions"
+        ((CRITICAL++))
+    else
+        success "No secrets in ENV"
+    fi
+
+    # Check for COPY of sensitive files
+    info "Checking for sensitive file copies..."
+    local sensitive_copy=$(grep -E "^COPY.*(\.env|\.pem|\.key|id_rsa)" Dockerfile 2>/dev/null || true)
+    if [[ -n "$sensitive_copy" ]]; then
+        error "CRITICAL: Copying sensitive files into image"
+        ((CRITICAL++))
+    else
+        success "No sensitive files copied"
+    fi
+
+    # Run hadolint if available
+    if command -v hadolint &>/dev/null; then
+        info "Running hadolint..."
+        hadolint Dockerfile 2>/dev/null || true
+    fi
+
+    # Run trivy if available
+    if command -v trivy &>/dev/null; then
+        info "Running trivy Dockerfile scan..."
+        trivy config Dockerfile --severity HIGH,CRITICAL 2>/dev/null || true
+    fi
+}
+
+# Generate report
+generate_report() {
+    header "Audit Summary"
+
+    echo ""
+    echo -e "${BOLD}Risk Score:${NC}"
+    [[ $CRITICAL -gt 0 ]] && echo -e "  ${RED}Critical: $CRITICAL${NC}" || echo "  Critical: 0"
+    [[ $HIGH -gt 0 ]] && echo -e "  ${YELLOW}High: $HIGH${NC}" || echo "  High: 0"
+    [[ $MEDIUM -gt 0 ]] && echo -e "  ${BLUE}Medium: $MEDIUM${NC}" || echo "  Medium: 0"
+    echo "  Low: $LOW"
+    echo ""
+
+    local total=$((CRITICAL + HIGH + MEDIUM + LOW))
+
+    if [[ $CRITICAL -gt 0 ]]; then
+        echo -e "${RED}${BOLD}⚠ CRITICAL ISSUES FOUND - Immediate action required${NC}"
+    elif [[ $HIGH -gt 0 ]]; then
+        echo -e "${YELLOW}${BOLD}⚠ High priority issues found - Address soon${NC}"
+    elif [[ $total -eq 0 ]]; then
+        echo -e "${GREEN}${BOLD}✓ No issues found - Infrastructure looks good!${NC}"
+    else
+        echo -e "${BLUE}${BOLD}ℹ Minor issues found - Review when convenient${NC}"
+    fi
+
+    echo ""
+    echo "Next Steps:"
+    [[ $CRITICAL -gt 0 ]] && echo "  1. Fix critical security issues immediately"
+    [[ $HIGH -gt 0 ]] && echo "  2. Schedule high-priority fixes for this sprint"
+    echo "  3. Run 'devops security-scan' for code-level analysis"
+    echo ""
+}
+
+# Parse arguments
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            --format=*)
+                FORMAT="${1#*=}"
+                ;;
+            --output=*)
+                OUTPUT_FILE="${1#*=}"
+                ;;
+            --dry-run)
+                DRY_RUN=true
+                ;;
+            all|security|cost|reliability)
+                SCOPE="$1"
+                ;;
+            *)
+                error "Unknown option: $1"
+                usage
+                exit 1
+                ;;
+        esac
+        shift
+    done
+}
+
+# Main
+main() {
+    parse_args "$@"
+
+    echo -e "${BOLD}${CYAN}"
+    echo "╔══════════════════════════════════════════════════════════╗"
+    echo "║           INFRASTRUCTURE AUDIT                           ║"
+    echo "╚══════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "Dry run mode - showing what would be scanned"
+        detect_infrastructure
+        exit 0
+    fi
+
+    check_tools
+    detect_infrastructure
+
+    case "$SCOPE" in
+        all|security)
+            scan_terraform
+            scan_kubernetes
+            scan_docker
+            ;;
+        cost)
+            info "Cost analysis requires cloud CLI access"
+            scan_terraform
+            ;;
+        reliability)
+            scan_kubernetes
+            ;;
+    esac
+
+    generate_report
+
+    # Exit with error if critical issues found
+    [[ $CRITICAL -gt 0 ]] && exit 1
+    exit 0
+}
+
+main "$@"

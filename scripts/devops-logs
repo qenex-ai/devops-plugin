@@ -1,0 +1,385 @@
+#!/usr/bin/env bash
+#
+# Logs - View and analyze logs from Kubernetes, Docker, CloudWatch
+# Usage: devops logs <source> [options]
+#
+
+set -euo pipefail
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+# Default settings
+SINCE="1h"
+TAIL=100
+FOLLOW=false
+SEARCH=""
+FORMAT="text"
+NAMESPACE="${NAMESPACE:-default}"
+
+info() { echo -e "${BLUE}ℹ${NC} $*"; }
+success() { echo -e "${GREEN}✓${NC} $*"; }
+warn() { echo -e "${YELLOW}⚠${NC} $*"; }
+error() { echo -e "${RED}✗${NC} $*" >&2; }
+header() { echo -e "\n${BOLD}${CYAN}$*${NC}"; }
+
+usage() {
+    cat <<EOF
+Logs - View and analyze logs from various sources
+
+Usage: devops logs <source> [options]
+
+Sources:
+  k8s/<deployment>     Kubernetes deployment/pod logs
+  docker/<container>   Docker container logs
+  cloudwatch/<group>   AWS CloudWatch log group
+  file/<path>          Local log file
+
+Options:
+  --since=DURATION     Time range (1h, 30m, 1d) (default: 1h)
+  --tail=LINES         Number of lines (default: 100)
+  -f, --follow         Stream logs in real-time
+  --search=PATTERN     Filter logs by pattern
+  --format=FORMAT      Output format: text, json (default: text)
+  --namespace=NS       Kubernetes namespace (default: default)
+  --all-containers     Show logs from all containers
+  -h, --help           Show this help
+
+Examples:
+  devops logs k8s/myapp
+  devops logs k8s/myapp --since=30m --follow
+  devops logs docker/nginx --search=error
+  devops logs cloudwatch/aws/lambda/my-function
+
+EOF
+}
+
+# Check tools
+check_tools() {
+    local source_type="$1"
+
+    case "$source_type" in
+        k8s)
+            if ! command -v kubectl &>/dev/null; then
+                error "kubectl not found"
+                exit 1
+            fi
+            ;;
+        docker)
+            if ! command -v docker &>/dev/null; then
+                error "docker not found"
+                exit 1
+            fi
+            ;;
+        cloudwatch)
+            if ! command -v aws &>/dev/null; then
+                error "aws CLI not found"
+                exit 1
+            fi
+            ;;
+    esac
+}
+
+# Convert duration to kubectl format
+convert_duration() {
+    local dur="$1"
+    # kubectl accepts: 1h, 30m, etc.
+    echo "$dur"
+}
+
+# Kubernetes logs
+logs_kubernetes() {
+    local target="$1"
+
+    check_tools "k8s"
+    header "Kubernetes Logs: $target"
+
+    # Check if it's a deployment or pod
+    local pod_selector=""
+    if kubectl get deployment "$target" -n "$NAMESPACE" &>/dev/null; then
+        info "Found deployment: $target"
+        pod_selector="-l app=$target"
+    elif kubectl get pod "$target" -n "$NAMESPACE" &>/dev/null; then
+        info "Found pod: $target"
+        pod_selector="$target"
+    else
+        # Try as label selector
+        pod_selector="-l app=$target"
+    fi
+
+    # Build command
+    local cmd="kubectl logs $pod_selector -n $NAMESPACE"
+    cmd="$cmd --since=$SINCE --tail=$TAIL"
+
+    [[ "${ALL_CONTAINERS:-false}" == "true" ]] && cmd="$cmd --all-containers"
+    [[ "$FOLLOW" == "true" ]] && cmd="$cmd -f"
+
+    echo ""
+    info "Running: $cmd"
+    echo "─────────────────────────────────────────"
+
+    if [[ -n "$SEARCH" ]]; then
+        eval "$cmd" 2>&1 | grep --color=auto -i "$SEARCH" || true
+    else
+        eval "$cmd" 2>&1
+    fi
+}
+
+# Docker logs
+logs_docker() {
+    local container="$1"
+
+    check_tools "docker"
+    header "Docker Logs: $container"
+
+    # Check if container exists
+    if ! docker ps -a --format '{{.Names}}' | grep -q "^${container}$"; then
+        error "Container not found: $container"
+        docker ps -a --format 'table {{.Names}}\t{{.Status}}' | head -10
+        exit 1
+    fi
+
+    # Build command
+    local cmd="docker logs"
+    cmd="$cmd --since=$SINCE --tail=$TAIL"
+    [[ "$FOLLOW" == "true" ]] && cmd="$cmd -f"
+    cmd="$cmd $container"
+
+    echo ""
+    info "Running: $cmd"
+    echo "─────────────────────────────────────────"
+
+    if [[ -n "$SEARCH" ]]; then
+        eval "$cmd" 2>&1 | grep --color=auto -i "$SEARCH" || true
+    else
+        eval "$cmd" 2>&1
+    fi
+}
+
+# CloudWatch logs
+logs_cloudwatch() {
+    local log_group="$1"
+
+    check_tools "cloudwatch"
+    header "CloudWatch Logs: $log_group"
+
+    # Convert since to milliseconds timestamp
+    local start_time
+    case "$SINCE" in
+        *h)
+            local hours="${SINCE%h}"
+            start_time=$(($(date +%s) - hours * 3600))000
+            ;;
+        *m)
+            local mins="${SINCE%m}"
+            start_time=$(($(date +%s) - mins * 60))000
+            ;;
+        *d)
+            local days="${SINCE%d}"
+            start_time=$(($(date +%s) - days * 86400))000
+            ;;
+        *)
+            start_time=$(($(date +%s) - 3600))000
+            ;;
+    esac
+
+    echo ""
+    info "Fetching logs since $(date -d @$((start_time / 1000)) 2>/dev/null || echo 'start time')"
+    echo "─────────────────────────────────────────"
+
+    local filter=""
+    [[ -n "$SEARCH" ]] && filter="--filter-pattern \"$SEARCH\""
+
+    if [[ "$FOLLOW" == "true" ]]; then
+        # Use aws logs tail for streaming
+        aws logs tail "$log_group" --follow --since "${SINCE}" 2>&1 || \
+            warn "aws logs tail not available, falling back to filter-log-events"
+    fi
+
+    # Fallback to filter-log-events
+    aws logs filter-log-events \
+        --log-group-name "$log_group" \
+        --start-time "$start_time" \
+        --query 'events[*].message' \
+        --output text \
+        $filter 2>&1 | head -"$TAIL"
+}
+
+# Local file logs
+logs_file() {
+    local filepath="$1"
+
+    if [[ ! -f "$filepath" ]]; then
+        error "File not found: $filepath"
+        exit 1
+    fi
+
+    header "File Logs: $filepath"
+    echo ""
+
+    if [[ "$FOLLOW" == "true" ]]; then
+        if [[ -n "$SEARCH" ]]; then
+            tail -f "$filepath" | grep --color=auto -i "$SEARCH"
+        else
+            tail -f "$filepath"
+        fi
+    else
+        if [[ -n "$SEARCH" ]]; then
+            tail -"$TAIL" "$filepath" | grep --color=auto -i "$SEARCH" || true
+        else
+            tail -"$TAIL" "$filepath"
+        fi
+    fi
+}
+
+# Analyze logs for errors
+analyze_logs() {
+    local source="$1"
+
+    header "Log Analysis"
+
+    echo "Error Summary:"
+    echo "─────────────────────────────────────────"
+
+    # Capture logs and analyze
+    local log_data
+    case "$source" in
+        k8s/*)
+            local target="${source#k8s/}"
+            log_data=$(kubectl logs -l "app=$target" -n "$NAMESPACE" --since="$SINCE" 2>/dev/null || echo "")
+            ;;
+        docker/*)
+            local container="${source#docker/}"
+            log_data=$(docker logs --since="$SINCE" "$container" 2>&1 || echo "")
+            ;;
+        *)
+            log_data=""
+            ;;
+    esac
+
+    if [[ -n "$log_data" ]]; then
+        echo "Total lines: $(echo "$log_data" | wc -l)"
+
+        local errors
+        errors=$(echo "$log_data" | grep -ci "error\|exception\|fatal" || echo "0")
+        echo -e "Errors:      ${RED}$errors${NC}"
+
+        local warnings
+        warnings=$(echo "$log_data" | grep -ci "warn" || echo "0")
+        echo -e "Warnings:    ${YELLOW}$warnings${NC}"
+
+        echo ""
+        echo "Top Error Types:"
+        echo "$log_data" | grep -i "error\|exception" | \
+            sed 's/.*\(Error\|Exception\)[^:]*:/\1:/' | \
+            sort | uniq -c | sort -rn | head -5 || echo "  No errors found"
+    else
+        warn "Could not retrieve logs for analysis"
+    fi
+
+    echo ""
+}
+
+# Parse arguments
+ALL_CONTAINERS=false
+ANALYZE=false
+SOURCE=""
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            --since=*)
+                SINCE="${1#*=}"
+                ;;
+            --tail=*)
+                TAIL="${1#*=}"
+                ;;
+            -f|--follow)
+                FOLLOW=true
+                ;;
+            --search=*)
+                SEARCH="${1#*=}"
+                ;;
+            --format=*)
+                FORMAT="${1#*=}"
+                ;;
+            --namespace=*)
+                NAMESPACE="${1#*=}"
+                ;;
+            --all-containers)
+                ALL_CONTAINERS=true
+                ;;
+            --analyze)
+                ANALYZE=true
+                ;;
+            k8s/*|docker/*|cloudwatch/*|file/*)
+                SOURCE="$1"
+                ;;
+            *)
+                if [[ -z "$SOURCE" ]]; then
+                    # Assume it's a k8s deployment name
+                    SOURCE="k8s/$1"
+                else
+                    error "Unknown option: $1"
+                    usage
+                    exit 1
+                fi
+                ;;
+        esac
+        shift
+    done
+}
+
+# Main
+main() {
+    parse_args "$@"
+
+    if [[ -z "$SOURCE" ]]; then
+        usage
+        exit 0
+    fi
+
+    echo -e "${BOLD}${CYAN}"
+    echo "╔══════════════════════════════════════════════════════════╗"
+    echo "║                    LOG VIEWER                            ║"
+    echo "╚══════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+
+    case "$SOURCE" in
+        k8s/*)
+            local target="${SOURCE#k8s/}"
+            logs_kubernetes "$target"
+            [[ "$ANALYZE" == "true" ]] && analyze_logs "$SOURCE"
+            ;;
+        docker/*)
+            local container="${SOURCE#docker/}"
+            logs_docker "$container"
+            [[ "$ANALYZE" == "true" ]] && analyze_logs "$SOURCE"
+            ;;
+        cloudwatch/*)
+            local log_group="${SOURCE#cloudwatch/}"
+            logs_cloudwatch "$log_group"
+            ;;
+        file/*)
+            local filepath="${SOURCE#file/}"
+            logs_file "$filepath"
+            ;;
+        *)
+            error "Unknown source type: $SOURCE"
+            usage
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
