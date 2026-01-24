@@ -8,18 +8,51 @@
       },
       "config": {
         "type": "prompt",
-        "prompt": "Before modifying infrastructure configuration files (Terraform, Kubernetes, or cloud configs), verify:\n1. The change aligns with security best practices\n2. No sensitive data (credentials, API keys) is being hardcoded\n3. Resource naming follows conventions\n4. Appropriate resource limits are set for containers\n\nIf any security concerns are detected, warn the user before proceeding."
+        "prompt": "Before modifying infrastructure configuration files (Terraform, Kubernetes, or cloud configs), verify:\n1. The change aligns with security best practices\n2. No sensitive data (credentials, API keys) is being hardcoded\n3. Resource naming follows conventions\n4. Appropriate resource limits are set for containers\n5. Check for public exposure settings (0.0.0.0/0, public buckets)\n\nIf any security concerns are detected, warn the user before proceeding."
       }
     },
     {
       "event": "PreToolUse",
       "matcher": {
         "toolName": "Bash",
-        "content": "kubectl apply|helm (install|upgrade)|terraform apply"
+        "content": "kubectl apply|helm (install|upgrade)|terraform apply|terraform destroy"
       },
       "config": {
         "type": "prompt",
-        "prompt": "Before executing deployment commands:\n1. Verify the target cluster/environment is correct (check kubectl context or terraform workspace)\n2. Confirm this is an intentional deployment\n3. For production deployments, ensure proper approvals\n\nWarn the user about the deployment target and ask for confirmation if deploying to production."
+        "prompt": "Before executing deployment commands:\n1. Verify the target cluster/environment is correct (check kubectl context or terraform workspace)\n2. Confirm this is an intentional deployment\n3. For production deployments, ensure proper approvals\n4. Check for pending migrations or dependencies\n\nWarn the user about the deployment target and ask for confirmation if deploying to production."
+      }
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": {
+        "toolName": "Bash",
+        "content": "aws (s3|ec2|rds|iam)|gcloud|az (vm|storage|sql)"
+      },
+      "config": {
+        "type": "prompt",
+        "prompt": "Before executing cloud commands:\n1. Verify the correct AWS profile/GCP project/Azure subscription is active\n2. Check for potentially destructive operations (delete, terminate, destroy)\n3. Confirm the region/zone is correct\n4. For IAM/permission changes, verify principle of least privilege\n\nFor destructive commands, explicitly warn the user and suggest using --dry-run where available."
+      }
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": {
+        "toolName": "Bash",
+        "content": "docker push|docker build.*-t.*(prod|production|live)"
+      },
+      "config": {
+        "type": "prompt",
+        "prompt": "Before pushing production Docker images:\n1. Verify the image tag is correct and follows versioning conventions\n2. Confirm the target registry is correct\n3. Check that security scanning has been performed\n4. Ensure no sensitive data is baked into the image\n\nWarn if pushing to production registry without proper verification."
+      }
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": {
+        "toolName": "Bash",
+        "content": "rm -rf|DROP TABLE|DELETE FROM|TRUNCATE|git reset --hard|git push.*--force"
+      },
+      "config": {
+        "type": "prompt",
+        "prompt": "WARNING: Potentially destructive command detected!\n\n1. Verify this operation is intentional\n2. Confirm backups exist if data loss is possible\n3. Check that the target is correct\n\nFor database operations, suggest using transactions or --dry-run.\nFor git operations, warn about data loss and suggest safer alternatives.\n\nExplicitly confirm with the user before proceeding."
       }
     },
     {
@@ -30,7 +63,29 @@
       },
       "config": {
         "type": "prompt",
-        "prompt": "After deployment commands:\n1. Suggest checking deployment status\n2. Recommend running health checks\n3. Provide rollback command for quick recovery if needed\n\nOffer to monitor the deployment or run verification commands."
+        "prompt": "After deployment commands:\n1. Suggest checking deployment status (kubectl rollout status, helm status)\n2. Recommend running health checks (curl health endpoint)\n3. Provide rollback command for quick recovery if needed\n4. Suggest monitoring for errors in the next few minutes\n\nOffer to monitor the deployment or run verification commands."
+      }
+    },
+    {
+      "event": "PostToolUse",
+      "matcher": {
+        "toolName": "Bash",
+        "content": "terraform apply"
+      },
+      "config": {
+        "type": "prompt",
+        "prompt": "After Terraform apply:\n1. Review the applied changes summary\n2. Verify resource creation/modification was successful\n3. Check for any drift or unexpected changes\n4. Update documentation if infrastructure changed significantly\n5. Commit terraform.tfstate if using local state (not recommended)\n\nSuggest running terraform plan again to verify state is clean."
+      }
+    },
+    {
+      "event": "PreToolUse",
+      "matcher": {
+        "toolName": "Bash",
+        "content": "vault|aws secretsmanager|gcloud secrets"
+      },
+      "config": {
+        "type": "prompt",
+        "prompt": "Before accessing secrets:\n1. Verify you have appropriate permissions for this secret\n2. Ensure audit logging is enabled\n3. Never log or display secret values in output\n4. Check that secret access is necessary for the current task\n\nRemind to handle secrets securely and avoid exposure."
       }
     }
   ]
