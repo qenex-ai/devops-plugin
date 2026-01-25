@@ -193,8 +193,8 @@ logs_cloudwatch() {
     info "Fetching logs since $(date -d @$((start_time / 1000)) 2>/dev/null || echo 'start time')"
     echo "─────────────────────────────────────────"
 
-    local filter=""
-    [[ -n "$SEARCH" ]] && filter="--filter-pattern \"$SEARCH\""
+    local filter_args=()
+    [[ -n "$SEARCH" ]] && filter_args=(--filter-pattern "$SEARCH")
 
     if [[ "$FOLLOW" == "true" ]]; then
         # Use aws logs tail for streaming
@@ -208,7 +208,7 @@ logs_cloudwatch() {
         --start-time "$start_time" \
         --query 'events[*].message' \
         --output text \
-        $filter 2>&1 | head -"$TAIL"
+        "${filter_args[@]}" 2>&1 | head -"$TAIL"
 }
 
 # Local file logs

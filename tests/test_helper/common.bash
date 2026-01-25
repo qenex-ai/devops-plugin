@@ -2,7 +2,7 @@
 # Common test helper functions for bats tests
 
 # Get the directory containing the scripts
-SCRIPTS_DIR="$(cd "$(dirname "${BATS_TEST_DIRNAME}")/../scripts" && pwd)"
+SCRIPTS_DIR="$(cd "$(dirname "${BATS_TEST_DIRNAME}")/scripts" && pwd)"
 FIXTURES_DIR="${BATS_TEST_DIRNAME}/fixtures"
 
 # Export for use in tests

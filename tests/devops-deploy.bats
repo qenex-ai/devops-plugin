@@ -147,7 +147,7 @@ teardown() {
     assert_success
 }
 
-@test "deploy: has docker deployment function" {
-    run grep -E '^deploy_docker\(\)' "$SCRIPTS_DIR/devops-deploy"
+@test "deploy: has docker compose deployment function" {
+    run grep -E '^deploy_compose\(\)' "$SCRIPTS_DIR/devops-deploy"
     assert_success
 }

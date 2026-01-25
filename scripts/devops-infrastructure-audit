@@ -157,7 +157,8 @@ scan_terraform() {
 
     # Check for hardcoded secrets
     info "Checking for hardcoded secrets..."
-    local secrets_found=$(grep -rE "(password|secret|api_key|access_key)\s*=\s*\"[^$\"]+" --include="*.tf" "$tf_dir" 2>/dev/null || true)
+    local secrets_found
+    secrets_found=$(grep -rE "(password|secret|api_key|access_key)\s*=\s*\"[^$\"]+" --include="*.tf" "$tf_dir" 2>/dev/null || true)
     if [[ -n "$secrets_found" ]]; then
         error "CRITICAL: Hardcoded secrets found in Terraform files"
         echo "$secrets_found" | head -5
@@ -168,7 +169,8 @@ scan_terraform() {
 
     # Check for overly permissive IAM
     info "Checking IAM policies..."
-    local permissive_iam=$(grep -rE '"Action"\s*:\s*"\*"|"Resource"\s*:\s*"\*"' --include="*.tf" "$tf_dir" 2>/dev/null || true)
+    local permissive_iam
+    permissive_iam=$(grep -rE '"Action"\s*:\s*"\*"|"Resource"\s*:\s*"\*"' --include="*.tf" "$tf_dir" 2>/dev/null || true)
     if [[ -n "$permissive_iam" ]]; then
         warn "HIGH: Overly permissive IAM policies found (Action: * or Resource: *)"
         ((HIGH++))
@@ -178,7 +180,8 @@ scan_terraform() {
 
     # Check for public access
     info "Checking for public exposure..."
-    local public_access=$(grep -rE 'publicly_accessible\s*=\s*true|cidr_block\s*=\s*"0\.0\.0\.0/0"' --include="*.tf" "$tf_dir" 2>/dev/null || true)
+    local public_access
+    public_access=$(grep -rE 'publicly_accessible\s*=\s*true|cidr_block\s*=\s*"0\.0\.0\.0/0"' --include="*.tf" "$tf_dir" 2>/dev/null || true)
     if [[ -n "$public_access" ]]; then
         warn "HIGH: Public access configurations found"
         ((HIGH++))
@@ -188,7 +191,8 @@ scan_terraform() {
 
     # Check for missing encryption
     info "Checking encryption settings..."
-    local unencrypted=$(grep -rE 'encrypted\s*=\s*false' --include="*.tf" "$tf_dir" 2>/dev/null || true)
+    local unencrypted
+    unencrypted=$(grep -rE 'encrypted\s*=\s*false' --include="*.tf" "$tf_dir" 2>/dev/null || true)
     if [[ -n "$unencrypted" ]]; then
         warn "MEDIUM: Unencrypted resources found"
         ((MEDIUM++))
@@ -222,7 +226,8 @@ scan_kubernetes() {
 
     # Check for privileged containers
     info "Checking for privileged containers..."
-    local privileged=$(grep -rE 'privileged:\s*true' --include="*.yaml" --include="*.yml" "$k8s_dir" 2>/dev/null || true)
+    local privileged
+    privileged=$(grep -rE 'privileged:\s*true' --include="*.yaml" --include="*.yml" "$k8s_dir" 2>/dev/null || true)
     if [[ -n "$privileged" ]]; then
         error "CRITICAL: Privileged containers found"
         ((CRITICAL++))
@@ -232,7 +237,8 @@ scan_kubernetes() {
 
     # Check for root user
     info "Checking for root user..."
-    local root_user=$(grep -rE 'runAsUser:\s*0|runAsNonRoot:\s*false' --include="*.yaml" --include="*.yml" "$k8s_dir" 2>/dev/null || true)
+    local root_user
+    root_user=$(grep -rE 'runAsUser:\s*0|runAsNonRoot:\s*false' --include="*.yaml" --include="*.yml" "$k8s_dir" 2>/dev/null || true)
     if [[ -n "$root_user" ]]; then
         warn "HIGH: Containers running as root found"
         ((HIGH++))
@@ -242,7 +248,8 @@ scan_kubernetes() {
 
     # Check for missing resource limits
     info "Checking resource limits..."
-    local deployments=$(find "$k8s_dir" -name "*.yaml" -o -name "*.yml" 2>/dev/null | xargs grep -l "kind: Deployment" 2>/dev/null || true)
+    local deployments
+    deployments=$(find "$k8s_dir" \( -name "*.yaml" -o -name "*.yml" \) -print0 2>/dev/null | xargs -0 grep -l "kind: Deployment" 2>/dev/null || true)
     for f in $deployments; do
         if ! grep -q "limits:" "$f" 2>/dev/null; then
             warn "MEDIUM: Missing resource limits in $f"
@@ -252,7 +259,8 @@ scan_kubernetes() {
 
     # Check for latest tag
     info "Checking image tags..."
-    local latest_tag=$(grep -rE 'image:.*:latest' --include="*.yaml" --include="*.yml" "$k8s_dir" 2>/dev/null || true)
+    local latest_tag
+    latest_tag=$(grep -rE 'image:.*:latest' --include="*.yaml" --include="*.yml" "$k8s_dir" 2>/dev/null || true)
     if [[ -n "$latest_tag" ]]; then
         warn "MEDIUM: Using 'latest' image tag"
         ((MEDIUM++))
@@ -312,7 +320,8 @@ scan_docker() {
 
     # Check for secrets in ENV
     info "Checking for secrets in ENV..."
-    local env_secrets=$(grep -E "^ENV.*(PASSWORD|SECRET|KEY|TOKEN)=" Dockerfile 2>/dev/null || true)
+    local env_secrets
+    env_secrets=$(grep -E "^ENV.*(PASSWORD|SECRET|KEY|TOKEN)=" Dockerfile 2>/dev/null || true)
     if [[ -n "$env_secrets" ]]; then
         error "CRITICAL: Secrets in ENV instructions"
         ((CRITICAL++))
@@ -322,7 +331,8 @@ scan_docker() {
 
     # Check for COPY of sensitive files
     info "Checking for sensitive file copies..."
-    local sensitive_copy=$(grep -E "^COPY.*(\.env|\.pem|\.key|id_rsa)" Dockerfile 2>/dev/null || true)
+    local sensitive_copy
+    sensitive_copy=$(grep -E "^COPY.*(\.env|\.pem|\.key|id_rsa)" Dockerfile 2>/dev/null || true)
     if [[ -n "$sensitive_copy" ]]; then
         error "CRITICAL: Copying sensitive files into image"
         ((CRITICAL++))
