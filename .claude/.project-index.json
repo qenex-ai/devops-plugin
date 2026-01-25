@@ -1,0 +1,384 @@
+{
+  "project_name": "devops-plugin",
+  "project_type": "claude-code-plugin",
+  "project_root": "/home/ubuntu/claude-plugins/devops",
+  "indexed_at": "2026-01-25T12:30:00Z",
+  "version": "1.0.0",
+
+  "summary": {
+    "total_files": 87,
+    "total_directories": 175,
+    "total_lines_of_code": 15420,
+    "primary_language": "bash",
+    "secondary_languages": ["markdown", "json", "yaml"]
+  },
+
+  "languages": {
+    "bash": {
+      "files": 18,
+      "lines": 4803,
+      "primary": true,
+      "extensions": [".sh", ".bash", "devops-*"],
+      "purpose": "CLI script implementations"
+    },
+    "markdown": {
+      "files": 61,
+      "lines": 9800,
+      "primary": true,
+      "extensions": [".md"],
+      "purpose": "Skills, commands, agents, documentation"
+    },
+    "json": {
+      "files": 4,
+      "lines": 1500,
+      "primary": false,
+      "extensions": [".json"],
+      "purpose": "Plugin manifests, hooks, chunks"
+    },
+    "yaml": {
+      "files": 1,
+      "lines": 50,
+      "primary": false,
+      "extensions": [".yml", ".yaml"],
+      "purpose": "CI/CD configuration"
+    },
+    "bats": {
+      "files": 6,
+      "lines": 800,
+      "primary": false,
+      "extensions": [".bats"],
+      "purpose": "Bash Automated Testing System"
+    }
+  },
+
+  "structure": {
+    "root_files": [
+      "plugin.json",
+      "README.md",
+      "DEPENDENCIES.md",
+      ".gitignore",
+      ".gitlab-ci.yml",
+      ".shellcheckrc"
+    ],
+    "directories": {
+      ".claude": {
+        "purpose": "Claude Code project configuration",
+        "files": [".chunks.json", ".project-index.json"]
+      },
+      ".claude-plugin": {
+        "purpose": "Alternative plugin manifest location",
+        "files": ["plugin.json"]
+      },
+      "agents": {
+        "purpose": "AI agent definitions for autonomous tasks",
+        "file_count": 7,
+        "pattern": "*.md"
+      },
+      "commands": {
+        "purpose": "Slash command specifications",
+        "file_count": 10,
+        "pattern": "*.md"
+      },
+      "scripts": {
+        "purpose": "Executable bash CLI implementations",
+        "file_count": 12,
+        "pattern": "devops-*"
+      },
+      "skills": {
+        "purpose": "Domain knowledge for 41 DevOps areas",
+        "file_count": 42,
+        "subdirs_per_skill": ["examples/", "references/", "scripts/"],
+        "pattern": "*/SKILL.md"
+      },
+      "hooks": {
+        "purpose": "Event hooks for safety validation",
+        "files": ["hooks.json"],
+        "subdirs": ["scripts/"]
+      },
+      "tests": {
+        "purpose": "Bats test suites for scripts",
+        "file_count": 7,
+        "pattern": "*.bats"
+      },
+      "examples": {
+        "purpose": "Usage examples (placeholder)",
+        "status": "empty"
+      },
+      "references": {
+        "purpose": "External references (placeholder)",
+        "status": "empty"
+      }
+    }
+  },
+
+  "components": {
+    "skills": {
+      "count": 41,
+      "categories": {
+        "infrastructure": {
+          "count": 12,
+          "skills": [
+            "cloud-providers",
+            "container-orchestration",
+            "serverless-architecture",
+            "global-network",
+            "dns-domains",
+            "edge-iot-computing",
+            "service-mesh",
+            "database-operations",
+            "caching-strategies",
+            "message-queues-events",
+            "search-infrastructure",
+            "data-engineering"
+          ]
+        },
+        "security-operations": {
+          "count": 8,
+          "skills": [
+            "security-compliance",
+            "compliance-frameworks",
+            "identity-access",
+            "incident-management",
+            "disaster-recovery",
+            "monitoring-observability",
+            "advanced-observability",
+            "cost-optimization"
+          ]
+        },
+        "cicd-deployment": {
+          "count": 8,
+          "skills": [
+            "ci-cd-pipelines",
+            "multi-platform-deploy",
+            "build-systems",
+            "feature-flags-experimentation",
+            "mobile-devops",
+            "api-management",
+            "graphql-infrastructure",
+            "realtime-websocket"
+          ]
+        },
+        "specialized": {
+          "count": 13,
+          "skills": [
+            "ai-ml-operations",
+            "blockchain-web3",
+            "gaming-infrastructure",
+            "media-streaming",
+            "ecommerce-payments",
+            "ux-ui-design",
+            "localization-i18n",
+            "developer-experience",
+            "testing-automation",
+            "documentation-generation",
+            "system-design",
+            "team-process-management",
+            "legacy-modernization"
+          ]
+        }
+      }
+    },
+    "commands": {
+      "count": 10,
+      "list": [
+        {
+          "name": "deploy",
+          "script": "devops-deploy",
+          "description": "Multi-platform deployment"
+        },
+        {
+          "name": "logs",
+          "script": "devops-logs",
+          "description": "Multi-source log viewing"
+        },
+        {
+          "name": "secrets-manage",
+          "script": "devops-secrets-manage",
+          "description": "Secrets management"
+        },
+        {
+          "name": "cache-manage",
+          "script": "devops-cache-manage",
+          "description": "Cache operations"
+        },
+        {
+          "name": "infrastructure-audit",
+          "script": "devops-infrastructure-audit",
+          "description": "Infrastructure scanning"
+        },
+        {
+          "name": "security-scan",
+          "script": "devops-security-scan",
+          "description": "Security analysis"
+        },
+        {
+          "name": "k8s-deploy",
+          "script": "devops-k8s-deploy",
+          "description": "Kubernetes deployment"
+        },
+        {
+          "name": "db-migrate",
+          "script": "devops-db-migrate",
+          "description": "Database migrations"
+        },
+        {
+          "name": "create-pipeline",
+          "script": "devops-create-pipeline",
+          "description": "CI/CD config generator"
+        },
+        {
+          "name": "configure-dns",
+          "script": "devops-configure-dns",
+          "description": "DNS management"
+        }
+      ]
+    },
+    "agents": {
+      "count": 7,
+      "list": [
+        {
+          "name": "infrastructure-auditor",
+          "model": "sonnet",
+          "tools": ["Read", "Glob", "Grep", "Bash"]
+        },
+        {
+          "name": "security-analyzer",
+          "model": "sonnet",
+          "tools": ["Read", "Glob", "Grep", "Bash"]
+        },
+        {
+          "name": "deployment-validator",
+          "model": "sonnet",
+          "tools": ["Read", "Glob", "Grep", "Bash"]
+        },
+        {
+          "name": "cost-optimizer",
+          "model": "haiku",
+          "tools": ["Read", "Glob", "Grep", "Bash"]
+        },
+        {
+          "name": "compliance-checker",
+          "model": "sonnet",
+          "tools": ["Read", "Glob", "Grep", "Bash"]
+        },
+        {
+          "name": "performance-optimizer",
+          "model": "sonnet",
+          "tools": ["Read", "Glob", "Grep", "Bash"]
+        },
+        {
+          "name": "ux-reviewer",
+          "model": "sonnet",
+          "tools": ["Read", "Glob", "Grep"]
+        }
+      ]
+    },
+    "hooks": {
+      "count": 3,
+      "types": ["PreToolUse", "PostToolUse"],
+      "purposes": ["security validation", "deployment verification"]
+    },
+    "tests": {
+      "framework": "bats",
+      "count": 127,
+      "coverage": {
+        "scripts_tested": 6,
+        "scripts_total": 11
+      }
+    }
+  },
+
+  "dependencies": {
+    "external_tools": {
+      "required": [
+        "bash (4.0+)",
+        "jq",
+        "curl"
+      ],
+      "optional_by_command": {
+        "deploy": ["kubectl", "docker", "helm", "aws"],
+        "logs": ["kubectl", "docker", "aws"],
+        "secrets-manage": ["vault", "aws", "gcloud", "kubectl"],
+        "cache-manage": ["redis-cli"],
+        "infrastructure-audit": ["checkov", "tfsec", "trivy", "hadolint"],
+        "security-scan": ["semgrep", "gitleaks", "trivy", "checkov", "tfsec", "bandit"],
+        "k8s-deploy": ["kubectl", "helm"],
+        "db-migrate": ["python", "ruby", "node"],
+        "create-pipeline": [],
+        "configure-dns": ["curl", "aws"]
+      }
+    },
+    "claude_code": {
+      "minimum_version": "1.0.0",
+      "required_features": ["plugins", "hooks", "agents"]
+    }
+  },
+
+  "key_files": {
+    "entry_points": [
+      "plugin.json",
+      "scripts/devops"
+    ],
+    "configuration": [
+      "plugin.json",
+      ".claude-plugin/plugin.json",
+      "hooks/hooks.json",
+      ".shellcheckrc",
+      ".gitlab-ci.yml"
+    ],
+    "documentation": [
+      "README.md",
+      "DEPENDENCIES.md"
+    ],
+    "testing": [
+      "scripts/run-tests.sh",
+      "tests/test_helper/common.bash"
+    ]
+  },
+
+  "metrics": {
+    "scripts": {
+      "total_lines": 4803,
+      "by_script": {
+        "devops": 150,
+        "devops-deploy": 450,
+        "devops-logs": 350,
+        "devops-secrets-manage": 400,
+        "devops-cache-manage": 380,
+        "devops-infrastructure-audit": 520,
+        "devops-security-scan": 420,
+        "devops-k8s-deploy": 340,
+        "devops-db-migrate": 380,
+        "devops-create-pipeline": 340,
+        "devops-configure-dns": 327,
+        "run-tests.sh": 246
+      }
+    },
+    "documentation": {
+      "skills_documented": 41,
+      "commands_documented": 10,
+      "agents_documented": 7
+    },
+    "test_coverage": {
+      "total_tests": 127,
+      "scripts_with_tests": 6,
+      "passing": 127,
+      "failing": 0
+    }
+  },
+
+  "ci_cd": {
+    "platform": "GitLab CI",
+    "config_file": ".gitlab-ci.yml",
+    "stages": ["lint", "test"],
+    "linting": "shellcheck",
+    "testing": "bats"
+  },
+
+  "recent_activity": {
+    "last_commit": "38c2387",
+    "last_commit_message": "feat: Add comprehensive semantic file map with full relationships",
+    "branch": "main",
+    "remote": "https://github.com/qenex-ai/devops-plugin.git"
+  }
+}
