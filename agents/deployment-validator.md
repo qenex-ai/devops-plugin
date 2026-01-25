@@ -283,3 +283,12 @@ Rollback command (if needed):
 ```
 
 Provide clear pass/fail status with actionable next steps for any failures.
+
+## Related Skills
+
+This agent leverages knowledge from these DevOps skills:
+
+- **[ci-cd-pipelines](../skills/ci-cd-pipelines/SKILL.md)** - Build and deploy pipelines
+- **[container-orchestration](../skills/container-orchestration/SKILL.md)** - Kubernetes deployments
+- **[multi-platform-deploy](../skills/multi-platform-deploy/SKILL.md)** - Cross-platform deployment
+- **[monitoring-observability](../skills/monitoring-observability/SKILL.md)** - Health checks and metrics

@@ -63,3 +63,12 @@ For each applicable control:
 2. Current status (Compliant/Non-compliant/Partial)
 3. Evidence location
 4. Remediation steps if needed
+
+## Related Skills
+
+This agent leverages knowledge from these DevOps skills:
+
+- **[compliance-frameworks](../skills/compliance-frameworks/SKILL.md)** - SOC2, HIPAA, GDPR, PCI-DSS
+- **[security-compliance](../skills/security-compliance/SKILL.md)** - Security controls and auditing
+- **[identity-access](../skills/identity-access/SKILL.md)** - Access control requirements
+- **[disaster-recovery](../skills/disaster-recovery/SKILL.md)** - Business continuity controls

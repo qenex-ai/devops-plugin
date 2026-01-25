@@ -57,3 +57,12 @@ Provide specific findings with:
 2. WCAG criterion (if applicable)
 3. Code location
 4. Recommended fix with code example
+
+## Related Skills
+
+This agent leverages knowledge from these DevOps skills:
+
+- **[ux-ui-design](../skills/ux-ui-design/SKILL.md)** - Design systems, accessibility
+- **[localization-i18n](../skills/localization-i18n/SKILL.md)** - Internationalization
+- **[build-systems](../skills/build-systems/SKILL.md)** - Frontend build optimization
+- **[testing-automation](../skills/testing-automation/SKILL.md)** - E2E and visual regression

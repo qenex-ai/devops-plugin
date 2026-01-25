@@ -1,0 +1,504 @@
+#!/usr/bin/env bash
+#
+# Create Pipeline - Generate CI/CD pipeline configurations
+# Usage: devops create-pipeline <platform> [options]
+#
+
+set -euo pipefail
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+# Default settings
+PLATFORM="${CI_PLATFORM:-github}"
+LANGUAGE="${PROJECT_LANGUAGE:-auto}"
+OUTPUT_DIR="."
+DRY_RUN=false
+FORCE=false
+
+info() { echo -e "${BLUE}ℹ${NC} $*"; }
+success() { echo -e "${GREEN}✓${NC} $*"; }
+warn() { echo -e "${YELLOW}⚠${NC} $*"; }
+error() { echo -e "${RED}✗${NC} $*" >&2; }
+header() { echo -e "\n${BOLD}${CYAN}$*${NC}"; }
+
+usage() {
+    cat <<EOF
+Create Pipeline - Generate CI/CD pipeline configurations
+
+Usage: devops create-pipeline <platform> [options]
+
+Platforms:
+  github        GitHub Actions workflow
+  gitlab        GitLab CI/CD pipeline
+  jenkins       Jenkinsfile
+  azure         Azure DevOps pipeline
+  circleci      CircleCI config
+  bitbucket     Bitbucket Pipelines
+
+Options:
+  --language=LANG         Project language: node, python, rust, go, java (default: auto)
+  --output=DIR            Output directory (default: current)
+  --docker                Include Docker build/push
+  --k8s                   Include Kubernetes deployment
+  --terraform             Include Terraform stages
+  --security              Include security scanning
+  --coverage              Include code coverage
+  --notifications         Include Slack/Teams notifications
+  --dry-run               Show generated config without writing
+  --force                 Overwrite existing files
+  -h, --help              Show this help
+
+Examples:
+  devops create-pipeline github --language=node
+  devops create-pipeline gitlab --language=python --docker --k8s
+  devops create-pipeline github --security --coverage
+  devops create-pipeline jenkins --language=java --docker
+
+Environment Variables:
+  CI_PLATFORM             Default CI platform
+  PROJECT_LANGUAGE        Default project language
+
+EOF
+}
+
+# Detect project language
+detect_language() {
+    if [[ -f "package.json" ]]; then
+        echo "node"
+    elif [[ -f "requirements.txt" ]] || [[ -f "pyproject.toml" ]]; then
+        echo "python"
+    elif [[ -f "Cargo.toml" ]]; then
+        echo "rust"
+    elif [[ -f "go.mod" ]]; then
+        echo "go"
+    elif [[ -f "pom.xml" ]] || [[ -f "build.gradle" ]]; then
+        echo "java"
+    else
+        echo "unknown"
+    fi
+}
+
+# GitHub Actions workflow
+generate_github() {
+    local lang="$1"
+    local include_docker="${2:-false}"
+    local include_k8s="${3:-false}"
+    local include_security="${4:-false}"
+
+    mkdir -p "$OUTPUT_DIR/.github/workflows"
+    local output_file="$OUTPUT_DIR/.github/workflows/ci.yml"
+
+    if [[ -f "$output_file" ]] && [[ "$FORCE" != "true" ]]; then
+        error "File exists: $output_file (use --force to overwrite)"
+        return 1
+    fi
+
+    cat > "$output_file" <<'YAML'
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+YAML
+
+    # Language-specific lint steps
+    case "$lang" in
+        node)
+            cat >> "$output_file" <<'YAML'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run lint
+YAML
+            ;;
+        python)
+            cat >> "$output_file" <<'YAML'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install ruff
+      - run: ruff check .
+YAML
+            ;;
+        rust)
+            cat >> "$output_file" <<'YAML'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --check
+      - run: cargo clippy -- -D warnings
+YAML
+            ;;
+        go)
+            cat >> "$output_file" <<'YAML'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - run: go vet ./...
+      - run: golangci-lint run
+YAML
+            ;;
+    esac
+
+    cat >> "$output_file" <<'YAML'
+
+  test:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+YAML
+
+    # Language-specific test steps
+    case "$lang" in
+        node)
+            cat >> "$output_file" <<'YAML'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm test
+YAML
+            ;;
+        python)
+            cat >> "$output_file" <<'YAML'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e ".[dev]"
+      - run: pytest --cov
+YAML
+            ;;
+        rust)
+            cat >> "$output_file" <<'YAML'
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test
+YAML
+            ;;
+        go)
+            cat >> "$output_file" <<'YAML'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - run: go test -v -race ./...
+YAML
+            ;;
+    esac
+
+    # Security scanning
+    if [[ "$include_security" == "true" ]]; then
+        cat >> "$output_file" <<'YAML'
+
+  security:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+YAML
+    fi
+
+    # Docker build
+    if [[ "$include_docker" == "true" ]]; then
+        cat >> "$output_file" <<'YAML'
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+YAML
+    fi
+
+    # Kubernetes deployment
+    if [[ "$include_k8s" == "true" ]]; then
+        cat >> "$output_file" <<'YAML'
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubectl
+        run: |
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+
+      - name: Deploy to Kubernetes
+        run: |
+          kubectl set image deployment/app app=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          kubectl rollout status deployment/app
+YAML
+    fi
+
+    success "Created $output_file"
+}
+
+# GitLab CI pipeline
+generate_gitlab() {
+    local lang="$1"
+    local include_docker="${2:-false}"
+    local include_k8s="${3:-false}"
+    local include_security="${4:-false}"
+
+    local output_file="$OUTPUT_DIR/.gitlab-ci.yml"
+
+    if [[ -f "$output_file" ]] && [[ "$FORCE" != "true" ]]; then
+        error "File exists: $output_file (use --force to overwrite)"
+        return 1
+    fi
+
+    cat > "$output_file" <<'YAML'
+stages:
+  - lint
+  - test
+  - security
+  - build
+  - deploy
+
+variables:
+  DOCKER_TLS_CERTDIR: "/certs"
+
+YAML
+
+    # Language-specific jobs
+    case "$lang" in
+        node)
+            cat >> "$output_file" <<'YAML'
+lint:
+  stage: lint
+  image: node:20-alpine
+  script:
+    - npm ci
+    - npm run lint
+  cache:
+    paths:
+      - node_modules/
+
+test:
+  stage: test
+  image: node:20-alpine
+  script:
+    - npm ci
+    - npm test -- --coverage
+  coverage: '/All files[^|]*\|[^|]*\s+([\d\.]+)/'
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage/cobertura-coverage.xml
+YAML
+            ;;
+        python)
+            cat >> "$output_file" <<'YAML'
+lint:
+  stage: lint
+  image: python:3.12-slim
+  script:
+    - pip install ruff
+    - ruff check .
+
+test:
+  stage: test
+  image: python:3.12-slim
+  script:
+    - pip install -e ".[dev]"
+    - pytest --cov --cov-report=xml
+  coverage: '/TOTAL.*\s+(\d+%)/'
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+YAML
+            ;;
+        rust)
+            cat >> "$output_file" <<'YAML'
+lint:
+  stage: lint
+  image: rust:latest
+  script:
+    - rustup component add clippy rustfmt
+    - cargo fmt --check
+    - cargo clippy -- -D warnings
+
+test:
+  stage: test
+  image: rust:latest
+  script:
+    - cargo test
+YAML
+            ;;
+    esac
+
+    if [[ "$include_security" == "true" ]]; then
+        cat >> "$output_file" <<'YAML'
+
+security:
+  stage: security
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  script:
+    - trivy fs --severity HIGH,CRITICAL .
+  allow_failure: true
+YAML
+    fi
+
+    if [[ "$include_docker" == "true" ]]; then
+        cat >> "$output_file" <<'YAML'
+
+build:
+  stage: build
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA .
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+  only:
+    - main
+    - develop
+YAML
+    fi
+
+    if [[ "$include_k8s" == "true" ]]; then
+        cat >> "$output_file" <<'YAML'
+
+deploy:
+  stage: deploy
+  image: bitnami/kubectl:latest
+  script:
+    - kubectl set image deployment/app app=$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+    - kubectl rollout status deployment/app
+  environment:
+    name: production
+  only:
+    - main
+  when: manual
+YAML
+    fi
+
+    success "Created $output_file"
+}
+
+# Main
+main() {
+    local platform=""
+    local include_docker=false
+    local include_k8s=false
+    local include_security=false
+    local include_coverage=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            github|gitlab|jenkins|azure|circleci|bitbucket)
+                platform="$1"; shift ;;
+            --language=*) LANGUAGE="${1#*=}"; shift ;;
+            --output=*) OUTPUT_DIR="${1#*=}"; shift ;;
+            --docker) include_docker=true; shift ;;
+            --k8s) include_k8s=true; shift ;;
+            --security) include_security=true; shift ;;
+            --coverage) include_coverage=true; shift ;;
+            --dry-run) DRY_RUN=true; shift ;;
+            --force) FORCE=true; shift ;;
+            -h|--help) usage; exit 0 ;;
+            *) shift ;;
+        esac
+    done
+
+    if [[ -z "$platform" ]]; then
+        usage
+        exit 1
+    fi
+
+    # Auto-detect language
+    if [[ "$LANGUAGE" == "auto" ]]; then
+        LANGUAGE=$(detect_language)
+        if [[ "$LANGUAGE" == "unknown" ]]; then
+            warn "Could not detect language, defaulting to node"
+            LANGUAGE="node"
+        fi
+        info "Detected language: $LANGUAGE"
+    fi
+
+    header "Generating $platform pipeline for $LANGUAGE project"
+
+    case "$platform" in
+        github)
+            generate_github "$LANGUAGE" "$include_docker" "$include_k8s" "$include_security"
+            ;;
+        gitlab)
+            generate_gitlab "$LANGUAGE" "$include_docker" "$include_k8s" "$include_security"
+            ;;
+        *)
+            error "Platform '$platform' not yet implemented"
+            exit 1
+            ;;
+    esac
+
+    echo ""
+    success "Pipeline configuration generated!"
+    info "Review the generated file and customize as needed."
+}
+
+main "$@"

@@ -1,0 +1,435 @@
+#!/usr/bin/env bash
+#
+# Configure DNS - Manage DNS records across providers
+# Usage: devops configure-dns <action> [options]
+#
+
+set -euo pipefail
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+# Default settings
+PROVIDER="${DNS_PROVIDER:-auto}"
+TTL="${DNS_TTL:-300}"
+DRY_RUN=false
+FORCE=false
+
+info() { echo -e "${BLUE}ℹ${NC} $*"; }
+success() { echo -e "${GREEN}✓${NC} $*"; }
+warn() { echo -e "${YELLOW}⚠${NC} $*"; }
+error() { echo -e "${RED}✗${NC} $*" >&2; }
+header() { echo -e "\n${BOLD}${CYAN}$*${NC}"; }
+
+usage() {
+    cat <<EOF
+Configure DNS - Manage DNS records across providers
+
+Usage: devops configure-dns <action> [options]
+
+Actions:
+  list <domain>           List all records for domain
+  get <domain> <name>     Get specific record
+  set <domain> <name>     Create or update record
+  delete <domain> <name>  Delete a record
+  check <domain>          Check DNS propagation
+  export <domain>         Export zone file
+  import <domain> <file>  Import zone file
+
+Options:
+  --provider=PROVIDER     DNS provider: cloudflare, route53, gcp, azure (default: auto)
+  --type=TYPE             Record type: A, AAAA, CNAME, MX, TXT, NS, SRV
+  --value=VALUE           Record value (IP, hostname, or text)
+  --ttl=SECONDS           Time to live (default: 300)
+  --priority=NUM          Priority for MX/SRV records
+  --proxied               Enable Cloudflare proxy (Cloudflare only)
+  --dry-run               Show what would change
+  --force                 Skip confirmation
+  -h, --help              Show this help
+
+Examples:
+  devops configure-dns list example.com
+  devops configure-dns set example.com www --type=A --value=1.2.3.4
+  devops configure-dns set example.com @ --type=MX --value=mail.example.com --priority=10
+  devops configure-dns set example.com _dmarc --type=TXT --value="v=DMARC1; p=reject"
+  devops configure-dns check example.com --type=A --name=www
+  devops configure-dns delete example.com old-subdomain --force
+
+Environment Variables:
+  DNS_PROVIDER            Default DNS provider
+  DNS_TTL                 Default TTL
+  CLOUDFLARE_API_TOKEN    Cloudflare API token (use: export CLOUDFLARE_API_TOKEN=...)
+  AWS_PROFILE             AWS profile for Route53
+  GOOGLE_PROJECT          GCP project for Cloud DNS
+
+Security Note:
+  Credentials are read from environment variables at runtime.
+  Never hardcode credentials in scripts or command history.
+
+EOF
+}
+
+# Detect DNS provider from environment
+detect_provider() {
+    if [[ -n "${CLOUDFLARE_API_TOKEN:-}" ]]; then
+        echo "cloudflare"
+    elif command -v aws &>/dev/null && aws sts get-caller-identity &>/dev/null 2>&1; then
+        echo "route53"
+    elif [[ -n "${GOOGLE_PROJECT:-}" ]]; then
+        echo "gcp"
+    elif [[ -n "${AZURE_SUBSCRIPTION_ID:-}" ]]; then
+        echo "azure"
+    else
+        echo "unknown"
+    fi
+}
+
+# Check required tools
+check_tools() {
+    local provider="$1"
+
+    case "$provider" in
+        cloudflare)
+            if ! command -v curl &>/dev/null; then
+                error "curl is required for Cloudflare"
+                return 1
+            fi
+            if ! command -v jq &>/dev/null; then
+                error "jq is required for JSON parsing"
+                return 1
+            fi
+            if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
+                error "CLOUDFLARE_API_TOKEN environment variable not set"
+                info "Set it with: export CLOUDFLARE_API_TOKEN=your_token"
+                return 1
+            fi
+            ;;
+        route53)
+            if ! command -v aws &>/dev/null; then
+                error "aws CLI is required for Route53"
+                return 1
+            fi
+            ;;
+        gcp)
+            if ! command -v gcloud &>/dev/null; then
+                error "gcloud CLI is required for Cloud DNS"
+                return 1
+            fi
+            ;;
+        azure)
+            if ! command -v az &>/dev/null; then
+                error "az CLI is required for Azure DNS"
+                return 1
+            fi
+            ;;
+    esac
+    return 0
+}
+
+# Secure API call wrapper for Cloudflare
+# Uses a config file approach to avoid exposing token in process list
+cloudflare_api() {
+    local method="$1"
+    local endpoint="$2"
+    local data="${3:-}"
+
+    local args=(
+        -s
+        -X "$method"
+        -H "Content-Type: application/json"
+        -H @/dev/stdin
+    )
+
+    if [[ -n "$data" ]]; then
+        args+=(--data "$data")
+    fi
+
+    # Pass authorization header via stdin to avoid exposure in process list
+    echo "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" | \
+        curl "${args[@]}" "https://api.cloudflare.com/client/v4${endpoint}"
+}
+
+# Cloudflare operations
+cloudflare_get_zone_id() {
+    local domain="$1"
+    cloudflare_api GET "/zones?name=$domain" | jq -r '.result[0].id'
+}
+
+cloudflare_list() {
+    local domain="$1"
+    local zone_id
+    zone_id=$(cloudflare_get_zone_id "$domain")
+
+    if [[ "$zone_id" == "null" ]] || [[ -z "$zone_id" ]]; then
+        error "Zone not found for $domain"
+        return 1
+    fi
+
+    header "DNS Records for $domain"
+    cloudflare_api GET "/zones/$zone_id/dns_records" | \
+        jq -r '.result[] | "\(.type)\t\(.name)\t\(.content)\t\(.ttl)"' | \
+        column -t -s $'\t'
+}
+
+cloudflare_set() {
+    local domain="$1"
+    local name="$2"
+    local record_type="$3"
+    local value="$4"
+    local zone_id
+    zone_id=$(cloudflare_get_zone_id "$domain")
+
+    local full_name
+    if [[ "$name" == "@" ]]; then
+        full_name="$domain"
+    else
+        full_name="$name.$domain"
+    fi
+
+    # Check if record exists
+    local existing
+    existing=$(cloudflare_api GET "/zones/$zone_id/dns_records?name=$full_name&type=$record_type" | \
+        jq -r '.result[0].id')
+
+    local data
+    data=$(jq -n \
+        --arg type "$record_type" \
+        --arg name "$full_name" \
+        --arg content "$value" \
+        --argjson ttl "$TTL" \
+        '{type: $type, name: $name, content: $content, ttl: $ttl}')
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY RUN] Would set $record_type record for $full_name to $value"
+        return 0
+    fi
+
+    if [[ "$existing" != "null" ]] && [[ -n "$existing" ]]; then
+        # Update existing
+        info "Updating existing record..."
+        cloudflare_api PUT "/zones/$zone_id/dns_records/$existing" "$data" | jq -r '.success'
+    else
+        # Create new
+        info "Creating new record..."
+        cloudflare_api POST "/zones/$zone_id/dns_records" "$data" | jq -r '.success'
+    fi
+
+    success "Record set: $record_type $full_name -> $value"
+}
+
+cloudflare_delete() {
+    local domain="$1"
+    local name="$2"
+    local record_type="${3:-A}"
+    local zone_id
+    zone_id=$(cloudflare_get_zone_id "$domain")
+
+    local full_name
+    if [[ "$name" == "@" ]]; then
+        full_name="$domain"
+    else
+        full_name="$name.$domain"
+    fi
+
+    local record_id
+    record_id=$(cloudflare_api GET "/zones/$zone_id/dns_records?name=$full_name&type=$record_type" | \
+        jq -r '.result[0].id')
+
+    if [[ "$record_id" == "null" ]] || [[ -z "$record_id" ]]; then
+        error "Record not found: $full_name ($record_type)"
+        return 1
+    fi
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY RUN] Would delete $record_type record for $full_name"
+        return 0
+    fi
+
+    cloudflare_api DELETE "/zones/$zone_id/dns_records/$record_id" | jq -r '.success'
+    success "Record deleted: $full_name"
+}
+
+# Route53 operations
+route53_get_zone_id() {
+    local domain="$1"
+    aws route53 list-hosted-zones-by-name --dns-name "$domain" \
+        --query "HostedZones[?Name=='$domain.'].Id" --output text | sed 's|/hostedzone/||'
+}
+
+route53_list() {
+    local domain="$1"
+    local zone_id
+    zone_id=$(route53_get_zone_id "$domain")
+
+    header "DNS Records for $domain"
+    aws route53 list-resource-record-sets --hosted-zone-id "$zone_id" \
+        --query "ResourceRecordSets[*].[Type,Name,ResourceRecords[0].Value,TTL]" \
+        --output table
+}
+
+route53_set() {
+    local domain="$1"
+    local name="$2"
+    local record_type="$3"
+    local value="$4"
+    local zone_id
+    zone_id=$(route53_get_zone_id "$domain")
+
+    local full_name
+    if [[ "$name" == "@" ]]; then
+        full_name="$domain."
+    else
+        full_name="$name.$domain."
+    fi
+
+    local change_batch
+    change_batch=$(cat <<EOF
+{
+  "Changes": [{
+    "Action": "UPSERT",
+    "ResourceRecordSet": {
+      "Name": "$full_name",
+      "Type": "$record_type",
+      "TTL": $TTL,
+      "ResourceRecords": [{"Value": "$value"}]
+    }
+  }]
+}
+EOF
+)
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY RUN] Would set $record_type record for $full_name to $value"
+        echo "$change_batch" | jq '.'
+        return 0
+    fi
+
+    aws route53 change-resource-record-sets \
+        --hosted-zone-id "$zone_id" \
+        --change-batch "$change_batch"
+
+    success "Record set: $record_type $full_name -> $value"
+}
+
+# Check DNS propagation
+check_propagation() {
+    local domain="$1"
+    local name="${2:-@}"
+    local record_type="${3:-A}"
+
+    local full_name
+    if [[ "$name" == "@" ]]; then
+        full_name="$domain"
+    else
+        full_name="$name.$domain"
+    fi
+
+    header "Checking DNS Propagation for $full_name ($record_type)"
+
+    local dns_servers=(
+        "8.8.8.8:Google"
+        "1.1.1.1:Cloudflare"
+        "9.9.9.9:Quad9"
+        "208.67.222.222:OpenDNS"
+    )
+
+    for entry in "${dns_servers[@]}"; do
+        local server="${entry%%:*}"
+        local name_label="${entry##*:}"
+        local result
+        result=$(dig +short "$full_name" "$record_type" "@$server" 2>/dev/null || echo "FAILED")
+        if [[ -n "$result" ]] && [[ "$result" != "FAILED" ]]; then
+            success "$name_label ($server): $result"
+        else
+            warn "$name_label ($server): No response"
+        fi
+    done
+}
+
+# Main
+main() {
+    local action=""
+    local domain=""
+    local name=""
+    local record_type=""
+    local value=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            list|get|set|delete|check|export|import)
+                action="$1"
+                shift
+                [[ $# -gt 0 ]] && domain="$1" && shift
+                [[ $# -gt 0 ]] && [[ ! "$1" =~ ^-- ]] && name="$1" && shift
+                ;;
+            --provider=*) PROVIDER="${1#*=}"; shift ;;
+            --type=*) record_type="${1#*=}"; shift ;;
+            --value=*) value="${1#*=}"; shift ;;
+            --ttl=*) TTL="${1#*=}"; shift ;;
+            --dry-run) DRY_RUN=true; shift ;;
+            --force) FORCE=true; shift ;;
+            -h|--help) usage; exit 0 ;;
+            *) shift ;;
+        esac
+    done
+
+    if [[ -z "$action" ]]; then
+        usage
+        exit 1
+    fi
+
+    # Auto-detect provider
+    if [[ "$PROVIDER" == "auto" ]]; then
+        PROVIDER=$(detect_provider)
+        if [[ "$PROVIDER" == "unknown" ]]; then
+            error "Could not detect DNS provider. Set DNS_PROVIDER or configure credentials."
+            exit 1
+        fi
+        info "Detected provider: $PROVIDER"
+    fi
+
+    # Check tools
+    check_tools "$PROVIDER" || exit 1
+
+    case "$action" in
+        list)
+            case "$PROVIDER" in
+                cloudflare) cloudflare_list "$domain" ;;
+                route53) route53_list "$domain" ;;
+                *) error "List not implemented for $PROVIDER"; exit 1 ;;
+            esac
+            ;;
+        set)
+            if [[ -z "$record_type" ]] || [[ -z "$value" ]]; then
+                error "set requires --type and --value"
+                exit 1
+            fi
+            case "$PROVIDER" in
+                cloudflare) cloudflare_set "$domain" "$name" "$record_type" "$value" ;;
+                route53) route53_set "$domain" "$name" "$record_type" "$value" ;;
+                *) error "Set not implemented for $PROVIDER"; exit 1 ;;
+            esac
+            ;;
+        delete)
+            case "$PROVIDER" in
+                cloudflare) cloudflare_delete "$domain" "$name" "$record_type" ;;
+                *) error "Delete not implemented for $PROVIDER"; exit 1 ;;
+            esac
+            ;;
+        check)
+            check_propagation "$domain" "$name" "$record_type"
+            ;;
+        *)
+            error "Action '$action' not yet implemented"
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

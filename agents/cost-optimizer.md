@@ -45,3 +45,12 @@ Analyze cloud infrastructure for cost optimization opportunities.
 - Identify idle/unused resources
 
 Provide estimated savings for each recommendation.
+
+## Related Skills
+
+This agent leverages knowledge from these DevOps skills:
+
+- **[cost-optimization](../skills/cost-optimization/SKILL.md)** - FinOps, resource right-sizing
+- **[cloud-providers](../skills/cloud-providers/SKILL.md)** - AWS, GCP, Azure pricing
+- **[serverless-architecture](../skills/serverless-architecture/SKILL.md)** - Pay-per-use patterns
+- **[container-orchestration](../skills/container-orchestration/SKILL.md)** - K8s resource management

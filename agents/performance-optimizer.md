@@ -58,3 +58,12 @@ Analyze and optimize application performance across frontend, backend, and infra
 5. **Database Optimization**: Indexes, query tuning
 
 Provide specific, actionable recommendations with expected impact.
+
+## Related Skills
+
+This agent leverages knowledge from these DevOps skills:
+
+- **[caching-strategies](../skills/caching-strategies/SKILL.md)** - Redis, CDN, application caching
+- **[database-operations](../skills/database-operations/SKILL.md)** - Query optimization, indexing
+- **[monitoring-observability](../skills/monitoring-observability/SKILL.md)** - APM and performance metrics
+- **[global-network](../skills/global-network/SKILL.md)** - CDN and edge optimization

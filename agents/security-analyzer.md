@@ -113,3 +113,12 @@ For each vulnerability found:
 - Quick wins vs complex fixes
 
 Be specific and provide actionable remediation code. Don't just identify problems - show the secure alternative.
+
+## Related Skills
+
+This agent leverages knowledge from these DevOps skills:
+
+- **[security-compliance](../skills/security-compliance/SKILL.md)** - Security scanning tools and hardening
+- **[identity-access](../skills/identity-access/SKILL.md)** - IAM, SSO, RBAC, OAuth/OIDC
+- **[api-management](../skills/api-management/SKILL.md)** - API security, rate limiting
+- **[compliance-frameworks](../skills/compliance-frameworks/SKILL.md)** - SOC2, HIPAA, GDPR, PCI-DSS

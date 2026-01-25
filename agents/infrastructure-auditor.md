@@ -190,3 +190,13 @@ Suggestions for optimization and improvement.
 - [ ] Unused resources identified
 
 Be thorough but prioritize actionable findings. Provide specific remediation steps including code examples where possible.
+
+## Related Skills
+
+This agent leverages knowledge from these DevOps skills:
+
+- **[cloud-providers](../skills/cloud-providers/SKILL.md)** - AWS, GCP, Azure resource patterns
+- **[container-orchestration](../skills/container-orchestration/SKILL.md)** - Kubernetes security contexts
+- **[security-compliance](../skills/security-compliance/SKILL.md)** - Security scanning and hardening
+- **[compliance-frameworks](../skills/compliance-frameworks/SKILL.md)** - SOC2, HIPAA, GDPR requirements
+- **[cost-optimization](../skills/cost-optimization/SKILL.md)** - Resource right-sizing

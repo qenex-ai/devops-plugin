@@ -1,0 +1,498 @@
+#!/usr/bin/env bash
+#
+# Database Migration - Run database migrations with safety checks
+# Usage: devops db-migrate <action> [options]
+#
+
+set -euo pipefail
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+# Default settings
+DATABASE_URL="${DATABASE_URL:-}"
+MIGRATION_DIR="${MIGRATION_DIR:-migrations}"
+DRY_RUN=false
+FORCE=false
+BACKUP=true
+
+info() { echo -e "${BLUE}ℹ${NC} $*"; }
+success() { echo -e "${GREEN}✓${NC} $*"; }
+warn() { echo -e "${YELLOW}⚠${NC} $*"; }
+error() { echo -e "${RED}✗${NC} $*" >&2; }
+header() { echo -e "\n${BOLD}${CYAN}$*${NC}"; }
+
+usage() {
+    cat <<EOF
+Database Migration - Run database migrations with safety checks
+
+Usage: devops db-migrate <action> [options]
+
+Actions:
+  status              Show migration status
+  up                  Run pending migrations
+  down                Rollback last migration
+  down --all          Rollback all migrations
+  create <name>       Create new migration file
+  validate            Validate migration files
+  history             Show migration history
+
+Options:
+  --database=URL      Database connection URL
+  --dir=PATH          Migration directory (default: migrations)
+  --env=ENV           Environment: dev, staging, prod
+  --backup            Create backup before migrating (default: true)
+  --no-backup         Skip backup
+  --dry-run           Show what would run without executing
+  --force             Skip confirmation prompts
+  --timeout=SECONDS   Migration timeout (default: 300)
+  -h, --help          Show this help
+
+Migration Tools (auto-detected):
+  - Django (manage.py migrate)
+  - Rails (rails db:migrate)
+  - Alembic (alembic upgrade)
+  - Flyway (flyway migrate)
+  - Prisma (prisma migrate)
+  - Knex (knex migrate)
+  - golang-migrate
+  - diesel (Rust)
+
+Examples:
+  devops db-migrate status
+  devops db-migrate up --env=staging
+  devops db-migrate down --backup
+  devops db-migrate create add_users_table
+  devops db-migrate up --dry-run
+
+Environment Variables:
+  DATABASE_URL        Database connection string
+  MIGRATION_DIR       Migration files directory
+  DB_HOST             Database host
+  DB_NAME             Database name
+  DB_USER             Database user
+  DB_PASSWORD         Database password
+
+EOF
+}
+
+# Detect migration tool
+detect_tool() {
+    if [[ -f "manage.py" ]] && grep -q "django" manage.py 2>/dev/null; then
+        echo "django"
+    elif [[ -f "Gemfile" ]] && grep -q "rails" Gemfile 2>/dev/null; then
+        echo "rails"
+    elif [[ -f "alembic.ini" ]]; then
+        echo "alembic"
+    elif [[ -f "flyway.conf" ]] || [[ -d "flyway" ]]; then
+        echo "flyway"
+    elif [[ -f "prisma/schema.prisma" ]]; then
+        echo "prisma"
+    elif [[ -f "knexfile.js" ]] || [[ -f "knexfile.ts" ]]; then
+        echo "knex"
+    elif [[ -f "diesel.toml" ]]; then
+        echo "diesel"
+    elif command -v migrate &>/dev/null; then
+        echo "golang-migrate"
+    else
+        echo "unknown"
+    fi
+}
+
+# Create backup
+create_backup() {
+    local env="$1"
+
+    header "Creating Database Backup"
+
+    local backup_file="backup_$(date +%Y%m%d_%H%M%S).sql"
+
+    if [[ -n "$DATABASE_URL" ]]; then
+        # Parse DATABASE_URL
+        local db_type="${DATABASE_URL%%://*}"
+
+        case "$db_type" in
+            postgres|postgresql)
+                info "Backing up PostgreSQL database..."
+                if [[ "$DRY_RUN" == "true" ]]; then
+                    info "[DRY RUN] Would run: pg_dump > $backup_file"
+                else
+                    pg_dump "$DATABASE_URL" > "$backup_file"
+                    success "Backup created: $backup_file"
+                fi
+                ;;
+            mysql)
+                info "Backing up MySQL database..."
+                if [[ "$DRY_RUN" == "true" ]]; then
+                    info "[DRY RUN] Would run: mysqldump > $backup_file"
+                else
+                    # Extract components from URL
+                    mysqldump --single-transaction > "$backup_file"
+                    success "Backup created: $backup_file"
+                fi
+                ;;
+            *)
+                warn "Backup not supported for $db_type"
+                ;;
+        esac
+    else
+        warn "DATABASE_URL not set, skipping backup"
+    fi
+}
+
+# Migration status
+migration_status() {
+    local tool="$1"
+
+    header "Migration Status"
+
+    case "$tool" in
+        django)
+            python manage.py showmigrations
+            ;;
+        rails)
+            rails db:migrate:status
+            ;;
+        alembic)
+            alembic current
+            alembic history
+            ;;
+        flyway)
+            flyway info
+            ;;
+        prisma)
+            npx prisma migrate status
+            ;;
+        knex)
+            npx knex migrate:status
+            ;;
+        diesel)
+            diesel migration list
+            ;;
+        golang-migrate)
+            migrate -path "$MIGRATION_DIR" -database "$DATABASE_URL" version
+            ;;
+        *)
+            error "Unknown migration tool"
+            return 1
+            ;;
+    esac
+}
+
+# Run migrations up
+migration_up() {
+    local tool="$1"
+
+    header "Running Migrations"
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY RUN] Would run migrations with $tool"
+        case "$tool" in
+            django) info "Command: python manage.py migrate" ;;
+            rails) info "Command: rails db:migrate" ;;
+            alembic) info "Command: alembic upgrade head" ;;
+            prisma) info "Command: npx prisma migrate deploy" ;;
+        esac
+        return 0
+    fi
+
+    case "$tool" in
+        django)
+            python manage.py migrate
+            ;;
+        rails)
+            rails db:migrate
+            ;;
+        alembic)
+            alembic upgrade head
+            ;;
+        flyway)
+            flyway migrate
+            ;;
+        prisma)
+            npx prisma migrate deploy
+            ;;
+        knex)
+            npx knex migrate:latest
+            ;;
+        diesel)
+            diesel migration run
+            ;;
+        golang-migrate)
+            migrate -path "$MIGRATION_DIR" -database "$DATABASE_URL" up
+            ;;
+        *)
+            error "Unknown migration tool"
+            return 1
+            ;;
+    esac
+
+    success "Migrations completed!"
+}
+
+# Rollback migrations
+migration_down() {
+    local tool="$1"
+    local all="${2:-false}"
+
+    header "Rolling Back Migrations"
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY RUN] Would rollback migrations with $tool"
+        return 0
+    fi
+
+    case "$tool" in
+        django)
+            if [[ "$all" == "true" ]]; then
+                warn "Django doesn't support rolling back all migrations easily"
+                error "Specify the app and migration to rollback to"
+                return 1
+            fi
+            warn "Django requires specifying app and migration name"
+            info "Usage: python manage.py migrate <app> <migration>"
+            ;;
+        rails)
+            if [[ "$all" == "true" ]]; then
+                rails db:rollback STEP=999
+            else
+                rails db:rollback
+            fi
+            ;;
+        alembic)
+            if [[ "$all" == "true" ]]; then
+                alembic downgrade base
+            else
+                alembic downgrade -1
+            fi
+            ;;
+        flyway)
+            flyway undo
+            ;;
+        prisma)
+            npx prisma migrate reset
+            ;;
+        knex)
+            if [[ "$all" == "true" ]]; then
+                npx knex migrate:rollback --all
+            else
+                npx knex migrate:rollback
+            fi
+            ;;
+        diesel)
+            diesel migration revert
+            ;;
+        golang-migrate)
+            if [[ "$all" == "true" ]]; then
+                migrate -path "$MIGRATION_DIR" -database "$DATABASE_URL" down -all
+            else
+                migrate -path "$MIGRATION_DIR" -database "$DATABASE_URL" down 1
+            fi
+            ;;
+        *)
+            error "Unknown migration tool"
+            return 1
+            ;;
+    esac
+
+    success "Rollback completed!"
+}
+
+# Create new migration
+migration_create() {
+    local tool="$1"
+    local name="$2"
+
+    header "Creating Migration: $name"
+
+    if [[ -z "$name" ]]; then
+        error "Migration name required"
+        return 1
+    fi
+
+    case "$tool" in
+        django)
+            python manage.py makemigrations --name "$name"
+            ;;
+        rails)
+            rails generate migration "$name"
+            ;;
+        alembic)
+            alembic revision -m "$name"
+            ;;
+        flyway)
+            local version
+            version="V$(date +%Y%m%d%H%M%S)"
+            touch "$MIGRATION_DIR/${version}__${name}.sql"
+            success "Created: $MIGRATION_DIR/${version}__${name}.sql"
+            ;;
+        prisma)
+            npx prisma migrate dev --name "$name" --create-only
+            ;;
+        knex)
+            npx knex migrate:make "$name"
+            ;;
+        diesel)
+            diesel migration generate "$name"
+            ;;
+        golang-migrate)
+            local timestamp
+            timestamp=$(date +%Y%m%d%H%M%S)
+            touch "$MIGRATION_DIR/${timestamp}_${name}.up.sql"
+            touch "$MIGRATION_DIR/${timestamp}_${name}.down.sql"
+            success "Created: $MIGRATION_DIR/${timestamp}_${name}.up.sql"
+            success "Created: $MIGRATION_DIR/${timestamp}_${name}.down.sql"
+            ;;
+        *)
+            error "Unknown migration tool"
+            return 1
+            ;;
+    esac
+
+    success "Migration file created!"
+}
+
+# Validate migrations
+migration_validate() {
+    local tool="$1"
+
+    header "Validating Migrations"
+
+    local errors=0
+
+    # Check migration directory exists
+    if [[ ! -d "$MIGRATION_DIR" ]]; then
+        warn "Migration directory not found: $MIGRATION_DIR"
+        ((errors++))
+    fi
+
+    # Tool-specific validation
+    case "$tool" in
+        alembic)
+            alembic check 2>/dev/null || ((errors++))
+            ;;
+        flyway)
+            flyway validate || ((errors++))
+            ;;
+        prisma)
+            npx prisma validate || ((errors++))
+            ;;
+    esac
+
+    # Check for common issues
+    info "Checking for common issues..."
+
+    # Look for DROP TABLE without IF EXISTS
+    if grep -r "DROP TABLE" "$MIGRATION_DIR" 2>/dev/null | grep -v "IF EXISTS"; then
+        warn "Found DROP TABLE without IF EXISTS"
+        ((errors++))
+    fi
+
+    # Look for potential data loss
+    if grep -rE "TRUNCATE|DELETE FROM.*WHERE" "$MIGRATION_DIR" 2>/dev/null; then
+        warn "Found potential data loss operations (TRUNCATE/DELETE)"
+    fi
+
+    if [[ $errors -eq 0 ]]; then
+        success "All validations passed!"
+    else
+        error "$errors validation issues found"
+        return 1
+    fi
+}
+
+# Main
+main() {
+    local action=""
+    local name=""
+    local env="dev"
+    local rollback_all=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            status|up|down|create|validate|history)
+                action="$1"
+                shift
+                [[ $# -gt 0 ]] && [[ ! "$1" =~ ^-- ]] && name="$1" && shift
+                ;;
+            --database=*) DATABASE_URL="${1#*=}"; shift ;;
+            --dir=*) MIGRATION_DIR="${1#*=}"; shift ;;
+            --env=*) env="${1#*=}"; shift ;;
+            --backup) BACKUP=true; shift ;;
+            --no-backup) BACKUP=false; shift ;;
+            --all) rollback_all=true; shift ;;
+            --dry-run) DRY_RUN=true; shift ;;
+            --force) FORCE=true; shift ;;
+            -h|--help) usage; exit 0 ;;
+            *) shift ;;
+        esac
+    done
+
+    if [[ -z "$action" ]]; then
+        usage
+        exit 1
+    fi
+
+    # Detect migration tool
+    local tool
+    tool=$(detect_tool)
+
+    if [[ "$tool" == "unknown" ]]; then
+        error "Could not detect migration tool"
+        info "Supported tools: Django, Rails, Alembic, Flyway, Prisma, Knex, Diesel, golang-migrate"
+        exit 1
+    fi
+
+    info "Detected migration tool: $tool"
+    info "Environment: $env"
+
+    # Production safety check
+    if [[ "$env" == "prod" ]] || [[ "$env" == "production" ]]; then
+        if [[ "$FORCE" != "true" ]]; then
+            warn "⚠️  PRODUCTION ENVIRONMENT DETECTED ⚠️"
+            read -rp "Are you sure you want to continue? (yes/no): " confirm
+            if [[ "$confirm" != "yes" ]]; then
+                info "Aborted"
+                exit 0
+            fi
+        fi
+    fi
+
+    # Create backup for destructive operations
+    if [[ "$BACKUP" == "true" ]] && [[ "$action" == "up" || "$action" == "down" ]]; then
+        create_backup "$env"
+    fi
+
+    case "$action" in
+        status)
+            migration_status "$tool"
+            ;;
+        up)
+            migration_up "$tool"
+            ;;
+        down)
+            migration_down "$tool" "$rollback_all"
+            ;;
+        create)
+            migration_create "$tool" "$name"
+            ;;
+        validate)
+            migration_validate "$tool"
+            ;;
+        history)
+            migration_status "$tool"
+            ;;
+        *)
+            error "Unknown action: $action"
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
