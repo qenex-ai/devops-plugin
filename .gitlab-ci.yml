@@ -1,0 +1,241 @@
+# DevOps Plugin CI/CD Pipeline
+# Runs shellcheck linting and bats tests for all bash scripts
+
+stages:
+  - lint
+  - test
+  - security
+
+variables:
+  SHELLCHECK_VERSION: "v0.9.0"
+  BATS_VERSION: "v1.10.0"
+
+# Cache bats and shellcheck for faster builds
+.cache_template: &cache_template
+  cache:
+    key: "${CI_COMMIT_REF_SLUG}"
+    paths:
+      - .cache/
+
+# Shellcheck linting stage
+shellcheck:
+  stage: lint
+  image: koalaman/shellcheck-alpine:stable
+  <<: *cache_template
+  script:
+    - echo "Running shellcheck on all scripts..."
+    - |
+      find scripts/ -type f -name "devops*" -executable | while read script; do
+        echo "Checking: $script"
+        shellcheck --severity=warning --shell=bash "$script" || exit_code=$?
+      done
+    - |
+      if [ "${exit_code:-0}" -ne 0 ]; then
+        echo "Shellcheck found issues. See above for details."
+        exit 1
+      fi
+    - echo "Shellcheck passed!"
+  allow_failure: false
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH =~ /^claude\//
+
+# Shellcheck with SARIF output for security scanning
+shellcheck:sarif:
+  stage: lint
+  image: koalaman/shellcheck-alpine:stable
+  script:
+    - apk add --no-cache jq
+    - |
+      find scripts/ -type f -name "devops*" -executable -exec shellcheck --format=json {} \; > shellcheck-results.json || true
+    - |
+      cat shellcheck-results.json | jq '.' > shellcheck-report.json
+  artifacts:
+    paths:
+      - shellcheck-report.json
+    reports:
+      codequality: shellcheck-report.json
+    expire_in: 1 week
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# Bats unit tests
+bats:unit:
+  stage: test
+  image: bats/bats:latest
+  <<: *cache_template
+  before_script:
+    - |
+      # Install additional utilities if needed
+      apk add --no-cache bash coreutils grep sed
+  script:
+    - echo "Running bats tests..."
+    - cd /builds/$CI_PROJECT_PATH
+    - |
+      # Run all bats tests
+      bats tests/*.bats --tap
+  artifacts:
+    when: always
+    paths:
+      - test-results/
+    reports:
+      junit: test-results/bats-results.xml
+    expire_in: 1 week
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH =~ /^claude\//
+
+# Bats tests with JUnit output
+bats:junit:
+  stage: test
+  image: bats/bats:latest
+  <<: *cache_template
+  before_script:
+    - apk add --no-cache bash coreutils grep sed
+    - mkdir -p test-results
+  script:
+    - |
+      # Run tests with JUnit formatter
+      bats tests/*.bats --formatter junit > test-results/bats-results.xml || true
+  artifacts:
+    when: always
+    reports:
+      junit: test-results/bats-results.xml
+    expire_in: 1 week
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# Script syntax check (quick validation)
+syntax:check:
+  stage: lint
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache bash
+  script:
+    - echo "Checking bash syntax..."
+    - |
+      errors=0
+      for script in scripts/devops*; do
+        if [ -x "$script" ]; then
+          echo "Syntax check: $script"
+          if ! bash -n "$script"; then
+            echo "Syntax error in $script"
+            errors=$((errors + 1))
+          fi
+        fi
+      done
+      if [ $errors -gt 0 ]; then
+        echo "Found $errors scripts with syntax errors"
+        exit 1
+      fi
+    - echo "All scripts have valid syntax!"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH =~ /^claude\//
+
+# Security scan for secrets in code
+secrets:scan:
+  stage: security
+  image: zricethezav/gitleaks:latest
+  script:
+    - gitleaks detect --source . --verbose --redact
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Check for hardcoded sensitive patterns
+security:patterns:
+  stage: security
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache grep
+  script:
+    - echo "Checking for hardcoded sensitive patterns..."
+    - |
+      patterns=(
+        "password\s*=\s*['\"][^'\"]+['\"]"
+        "api_key\s*=\s*['\"][^'\"]+['\"]"
+        "secret\s*=\s*['\"][^'\"]+['\"]"
+        "AWS_SECRET_ACCESS_KEY"
+        "PRIVATE_KEY"
+      )
+      found=0
+      for pattern in "${patterns[@]}"; do
+        if grep -rE "$pattern" scripts/ --include="devops*" 2>/dev/null | grep -v "REDIS_PASSWORD:-" | grep -v "example" | grep -v "#"; then
+          echo "WARNING: Potential secret pattern found: $pattern"
+          found=$((found + 1))
+        fi
+      done
+      if [ $found -gt 0 ]; then
+        echo "Found $found potential hardcoded secrets"
+        exit 1
+      fi
+    - echo "No hardcoded secrets detected!"
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# Documentation check
+docs:check:
+  stage: lint
+  image: alpine:latest
+  script:
+    - echo "Checking documentation..."
+    - |
+      if [ ! -f "README.md" ]; then
+        echo "README.md not found"
+        exit 1
+      fi
+      if [ ! -f "DEPENDENCIES.md" ]; then
+        echo "DEPENDENCIES.md not found"
+        exit 1
+      fi
+    - echo "Documentation check passed!"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Full test suite (manual trigger for comprehensive testing)
+test:full:
+  stage: test
+  image: ubuntu:22.04
+  before_script:
+    - apt-get update && apt-get install -y bash shellcheck npm
+    - npm install -g bats
+  script:
+    - echo "Running full test suite..."
+    - shellcheck --version
+    - bats --version
+    - shellcheck scripts/devops* || true
+    - bats tests/*.bats
+  when: manual
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Pages job for test coverage reports
+pages:
+  stage: .post
+  image: alpine:latest
+  script:
+    - mkdir -p public
+    - |
+      cat > public/index.html << 'EOF'
+      <!DOCTYPE html>
+      <html>
+      <head><title>DevOps Plugin Test Results</title></head>
+      <body>
+        <h1>DevOps Plugin CI Results</h1>
+        <p>See pipeline artifacts for detailed reports.</p>
+      </body>
+      </html>
+      EOF
+  artifacts:
+    paths:
+      - public
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
